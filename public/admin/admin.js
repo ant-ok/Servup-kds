@@ -391,7 +391,32 @@ views.settings = async () => {
     toast('Сохранено');
     checkBanner();
   });
+  view.appendChild(await telegramCard());
 };
+
+async function telegramCard() {
+  const t = await api('/telegram');
+  const c = card('Уведомления в Telegram');
+  if (!t.enabled) {
+    c.insertAdjacentHTML('beforeend', '<p class="muted">Бот для уведомлений ещё не настроен на сервере (TELEGRAM_BOT_TOKEN).</p>');
+    return c;
+  }
+  c.insertAdjacentHTML('beforeend', `<p class="muted">Сообщим, если нет связи с Poster больше 3 минут, экран выключился во время работы
+    или заказ не готов дольше 30 минут. И ещё раз — когда всё восстановится.</p>
+    <p>${t.linked ? '<span class="pill ok">подключено</span>' : '<span class="pill">не подключено</span>'}</p>
+    <div class="toolbar">${t.linked
+      ? '<button class="light small" id="tgTest">Отправить проверку</button><button class="danger small" id="tgOff">Отключить</button>'
+      : '<button class="small" id="tgLink">Подключить</button>'}</div><div id="tgCode"></div>`);
+  c.querySelector('#tgLink')?.addEventListener('click', run(async () => {
+    const r = await api('/telegram/link', { method: 'POST', body: {} });
+    c.querySelector('#tgCode').innerHTML = r.url
+      ? `<p>Откройте <a href="${esc(r.url)}" target="_blank" rel="noopener">${esc(r.url)}</a> и нажмите «Start». Код действует 15 минут.</p>`
+      : `<p>Отправьте боту код <code>${esc(r.code)}</code>. Код действует 15 минут.</p>`;
+  }));
+  c.querySelector('#tgTest')?.addEventListener('click', run(async () => { await api('/telegram/test', { method: 'POST', body: {} }); toast('Отправлено'); }));
+  c.querySelector('#tgOff')?.addEventListener('click', run(async () => { await api('/telegram/unlink', { method: 'POST', body: {} }); render(); }));
+  return c;
+}
 
 // ---- stations ------------------------------------------------------------------------------
 views.stations = async () => {

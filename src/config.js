@@ -44,6 +44,20 @@ export const config = {
     timeoutMs: num('POSTER_TIMEOUT_MS', 10000),
   },
 
+  // One bot for the whole installation. Venues link their own chats;
+  // the platform chat receives every alert of every venue.
+  telegram: {
+    botToken: env('TELEGRAM_BOT_TOKEN', ''),
+    platformChatId: env('TELEGRAM_PLATFORM_CHAT_ID', ''),
+    apiUrl: env('TELEGRAM_API_URL', 'https://api.telegram.org'),
+  },
+
+  alerts: {
+    posterDownMin: num('ALERT_POSTER_DOWN_MIN', 3),
+    screenOfflineMin: num('ALERT_SCREEN_OFFLINE_MIN', 5),
+    stuckOrderMin: num('ALERT_STUCK_ORDER_MIN', 30),
+  },
+
   sync: {
     pollOpenMs: num('POLL_OPEN_MS', 4000),
     pollFullMs: num('POLL_FULL_MS', 60000),

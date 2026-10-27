@@ -1,3 +1,5 @@
+import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
@@ -10,22 +12,42 @@ import {
 import { applyAction, serveTicket, startSession, endSession, dismissTicket, getBoard, ActionError } from './units.js';
 import { REPORTS, toCsv } from './reports.js';
 import { getSummary, getRecipe, suggestNorms } from './kitchen.js';
+import { createLinkCode } from './alerts.js';
 import { createAccount, DEFAULT_SETTINGS } from './accounts.js';
 import { stationResolver } from './sync/reconcile.js';
 import { verifyWebhook, classifyWebhook } from './poster/webhook.js';
 import { exchangeOAuthCode } from './poster/client.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
+
+// Version of the screen code: a hash of the files the screen loads. Screens
+// compare it on every board refresh and reload themselves after a deploy.
+const CLIENT_VERSION = (() => {
+  const h = crypto.createHash('sha1');
+  for (const f of ['kds/index.html', 'kds/kds.js', 'kds/kds.css', 'sw.js']) {
+    try { h.update(fs.readFileSync(path.join(publicDir, f))); } catch { /* missing in tests */ }
+  }
+  return h.digest('hex').slice(0, 12);
+})();
 const PRESETS = ['bar', 'restaurant'];
 
-export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode }) {
+export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode, telegram = null }) {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: false }));
 
   app.use(express.static(publicDir, { extensions: ['html'] }));
-  app.get('/health', (req, res) => res.json({ ok: true, venues: engines.engines.size }));
+  // For an external uptime monitor: 200 while the DB answers, 503 otherwise.
+  app.get('/health', async (req, res) => {
+    try {
+      await query('SELECT 1');
+      const venues = [...engines.engines.values()];
+      res.json({ ok: true, version: CLIENT_VERSION, venues: venues.length, venuesSyncing: venues.filter((e) => e.getHealth().ok).length });
+    } catch (err) {
+      res.status(503).json({ ok: false, error: 'database unavailable' });
+    }
+  });
 
   // ---- Poster webhooks: one URL for every venue, routed by `account` -------
   app.post('/webhooks/poster', async (req, res) => {
@@ -96,7 +118,8 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode })
   });
 
   kds.get('/board', async (req, res) => {
-    res.json({ ...(await getBoard(req.device)), serverTime: new Date().toISOString(), health: engines.health(req.device.account_id) });
+    res.json({ ...(await getBoard(req.device)), serverTime: new Date().toISOString(), health: engines.health(req.device.account_id),
+      version: CLIENT_VERSION });
   });
 
   kds.get('/summary', async (req, res) => res.json(await getSummary(req.device, engines.get(req.device.account_id))));
@@ -358,6 +381,27 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode })
     const r = await getRecipe(A(req), Number(req.params.productId), engines.get(A(req)));
     if (!r) return res.status(404).json({ error: 'Позиция не найдена' });
     res.json(r);
+  });
+
+  // -- Telegram alerts
+  admin.get('/telegram', async (req, res) => {
+    const acc = (await query('SELECT telegram_chat_id FROM accounts WHERE id = $1', [A(req)])).rows[0];
+    res.json({ enabled: !!telegram, linked: !!acc.telegram_chat_id, botUsername: telegram?.username ?? null });
+  });
+  admin.post('/telegram/link', async (req, res) => {
+    if (!telegram) throw new ActionError('Telegram-бот не настроен на сервере', 409);
+    const code = await createLinkCode(A(req));
+    res.json({ code, url: telegram.username ? `https://t.me/${telegram.username}?start=${code}` : null });
+  });
+  admin.post('/telegram/unlink', async (req, res) => {
+    await query('UPDATE accounts SET telegram_chat_id = NULL WHERE id = $1', [A(req)]);
+    res.json({ ok: true });
+  });
+  admin.post('/telegram/test', async (req, res) => {
+    const acc = (await query('SELECT telegram_chat_id, name FROM accounts WHERE id = $1', [A(req)])).rows[0];
+    if (!telegram || !acc.telegram_chat_id) throw new ActionError('Telegram не подключён', 409);
+    await telegram.send(acc.telegram_chat_id, `🔔 Проверка уведомлений KDS: ${acc.name}. Всё работает.`);
+    res.json({ ok: true });
   });
 
   // -- devices

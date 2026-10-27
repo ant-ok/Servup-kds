@@ -25,11 +25,13 @@ export class SyncEngine extends EventEmitter {
   }
 
   async start() {
+    this.startedAt = new Date();
     await this.loadCatalogFromDb();
     this.syncCatalog().catch(() => {});
     this.loop('open', config.sync.pollOpenMs, () => this.pollOpen());
     this.loop('full', config.sync.pollFullMs, () => this.pollFull());
     this.loop('catalog', config.sync.catalogMs, () => this.syncCatalog());
+    this.loop('nightly', 10 * 60000, () => this.maybeNightlyResync());
   }
 
   stop() {
@@ -38,13 +40,24 @@ export class SyncEngine extends EventEmitter {
     this.stopped = true;
   }
 
+  // Runs fn every `ms`. While Poster keeps failing the interval doubles up to
+  // a minute, so an outage doesn't turn into a flood of requests; the first
+  // success brings it straight back. Venues start spread out over the interval.
   loop(name, ms, fn) {
+    let failures = 0;
     const tick = async () => {
       if (this.stopped) return;
-      try { await fn(); } catch (err) { this.fail(name, err); }
-      if (!this.stopped) this.timers.push(setTimeout(tick, ms));
+      try {
+        await fn();
+        failures = 0;
+      } catch (err) {
+        failures++;
+        this.fail(name, err);
+      }
+      const delay = failures ? Math.min(ms * 2 ** failures, Math.max(ms, 60000)) : ms;
+      if (!this.stopped) this.timers.push(setTimeout(tick, delay));
     };
-    this.timers.push(setTimeout(tick, name === 'catalog' ? ms : 0));
+    this.timers.push(setTimeout(tick, name === 'catalog' ? ms : Math.floor(Math.random() * Math.min(ms, 3000))));
   }
 
   fail(where, err) {
@@ -225,6 +238,24 @@ export class SyncEngine extends EventEmitter {
     }
     if (res.changed) this.emit('changed', { transactionId: t.id, ...res });
     return res;
+  }
+
+  // Once a day, at the start of the business day, re-read the last two days of
+  // closed checks from Poster. Whatever drifted (a missed close, a refund, an
+  // edited check) is corrected before anyone builds a payroll report.
+  async maybeNightlyResync(now = new Date()) {
+    const s = await getSettings(this.accountId);
+    const hour = Number(new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hourCycle: 'h23', timeZone: config.timezone }).format(now));
+    const last = s.nightly_resync_at ? new Date(s.nightly_resync_at) : null;
+    if (hour !== Number(s.day_start_hour ?? 6) || (last && now - last < 20 * 3600e3)) return false;
+    const checks = await this.backfill(new Date(now - 2 * 24 * 3600e3), now);
+    await query(
+      `INSERT INTO settings (account_id, key, value) VALUES ($1, 'nightly_resync_at', $2)
+       ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+      [this.accountId, JSON.stringify(now.toISOString())]);
+    this.health.lastNightlyAt = now.toISOString();
+    console.log(`[sync ${this.accountId}] nightly resync: ${checks} checks`);
+    return true;
   }
 
   // Pull closed checks for a past period so seller reports are complete.

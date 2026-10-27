@@ -8,7 +8,16 @@ import { config } from './config.js';
 pg.types.setTypeParser(1700, (v) => (v === null ? null : Number(v)));
 pg.types.setTypeParser(20, (v) => (v === null ? null : Number(v)));
 
-export const pool = new pg.Pool({ connectionString: config.databaseUrl, max: 10 });
+export const pool = new pg.Pool({
+  connectionString: config.databaseUrl,
+  max: 20,
+  connectionTimeoutMillis: 5000,   // fail fast instead of hanging when the DB is unreachable
+  statement_timeout: 15000,        // one bad query must never block a screen for long
+  idle_in_transaction_session_timeout: 30000,
+});
+// An idle client losing its connection (DB restart, network blip) emits here;
+// without a handler that would crash the whole process.
+pool.on('error', (err) => console.error('[db] idle client error:', err.message));
 
 export const query = (text, params) => pool.query(text, params);
 

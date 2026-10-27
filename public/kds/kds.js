@@ -71,6 +71,12 @@ async function loadBoard() {
   loading = (async () => {
     try {
       const data = await api('/board');
+      // A new version was deployed: reload. Unsent taps survive in localStorage.
+      if (data.version) {
+        if (state.version && data.version !== state.version && !state.queue.length) return location.reload();
+        state.version ??= data.version;
+      }
+      state.lastBoardOkAt = Date.now();
       state.serverOffset = new Date(data.serverTime) - Date.now();
       state.health = data.health;
       const fresh = data.tickets.filter((t) => !t.done && !state.seen.has(t.id));
@@ -500,6 +506,18 @@ async function start() {
 
   // Safety net in case a push is missed.
   setInterval(loadBoard, 15000);
+  // Watchdog: a screen that hasn't managed to refresh for 90 s while the
+  // network is up reloads itself (at most once every 5 minutes).
+  setInterval(() => {
+    const stale = Date.now() - (state.lastBoardOkAt ?? Date.now()) > 90000;
+    let last = 0;
+    try { last = Number(sessionStorage.getItem('kds_reloaded_at') ?? 0); } catch { /* private mode */ }
+    if (stale && navigator.onLine !== false && Date.now() - last > 300000) {
+      try { sessionStorage.setItem('kds_reloaded_at', String(Date.now())); } catch { /* ignore */ }
+      location.reload();
+    }
+  }, 15000);
+  state.lastBoardOkAt = Date.now();
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) { loadBoard(); navigator.wakeLock?.request('screen').catch(() => {}); }
   });

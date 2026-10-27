@@ -6,11 +6,21 @@ import { deviceByToken } from './auth.js';
 import { createApp } from './app.js';
 import { createAccount } from './accounts.js';
 import { EngineManager } from './sync/engine.js';
+import { createTelegram, startBotPolling, AlertMonitor } from './alerts.js';
 
 if (process.env.NODE_ENV === 'production' && (config.appSecret === 'change-me-please' || config.platformPassword === 'platform')) {
   console.error('[kds] Задайте APP_SECRET и PLATFORM_PASSWORD в .env перед запуском');
   process.exit(1);
 }
+
+// Last-resort guards. A stray rejected promise is logged; an uncaught
+// exception leaves the process in an unknown state, so it exits and Docker
+// restarts it (restart: always) within seconds.
+process.on('unhandledRejection', (err) => console.error('[kds] unhandled rejection:', err));
+process.on('uncaughtException', (err) => {
+  console.error('[kds] uncaught exception, restarting:', err);
+  process.exit(1);
+});
 
 await migrate();
 
@@ -41,7 +51,16 @@ const notify = (accountId) => {
   }, 100));
 };
 
-const app = createApp({ engines, notify });
+// Telegram alerts, when a bot token is configured.
+const telegram = createTelegram();
+if (telegram) {
+  telegram.getMe().then((me) => { telegram.username = me.username; }).catch((err) => console.error('[telegram]', err.message));
+  startBotPolling(telegram, { onError: (err) => console.error('[telegram]', err.message) });
+  const monitor = new AlertMonitor({ engines, send: telegram.send });
+  setInterval(() => monitor.check().catch((err) => console.error('[alerts]', err.message)), 60000);
+}
+
+const app = createApp({ engines, notify, telegram });
 const server = http.createServer(app);
 io = new Server(server, { pingInterval: 10000, pingTimeout: 8000 });
 

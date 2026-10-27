@@ -320,3 +320,19 @@ test('venues are isolated: data, PINs and actions never cross', async () => {
   await assert.rejects(units.applyAction({ opId: 'x1', token: ivan.token, action: 'ready', unitIds: [mine.id], device: other.device }), /Смена не найдена/);
   assert.equal((await reports.makers({ accountId: other.accountId, from: today(), to: today() })).length, 0);
 });
+
+test('nightly resync runs once at the start of the business day and fixes drift', async () => {
+  const id = v.fake.open({ waiter: 1 });
+  v.fake.add(id, 10, 2);
+  await poll();
+  v.fake.close(id);
+  // Pretend the close was missed: the check is still open on our side.
+  await db.query('UPDATE transactions SET status = 1, products_hash = NULL WHERE poster_transaction_id = $1', [id]);
+
+  const at = (h) => { const d = new Date(); d.setUTCHours(h - 3, 5, 0, 0); return d; }; // Europe/Moscow = UTC+3
+  assert.equal(await v.engine.maybeNightlyResync(at(14)), false, 'not at 14:00');
+  assert.equal(await v.engine.maybeNightlyResync(at(6)), true);
+  const { rows } = await db.query('SELECT status, payed_sum FROM transactions WHERE poster_transaction_id = $1', [id]);
+  assert.deepEqual(rows[0], { status: 2, payed_sum: 1000 });
+  assert.equal(await v.engine.maybeNightlyResync(at(6)), false, 'only once a day');
+});
