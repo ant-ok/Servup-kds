@@ -1,5 +1,12 @@
-# HTTPS certificate is issued automatically for the domain in DOMAIN.
+# DOMAIN set   → HTTPS with an automatic certificate for that name.
+# DOMAIN ":80"  → plain HTTP on port 80 (local network inside the venue);
+#                docker-compose sets that when DOMAIN is empty.
 {$DOMAIN} {
 	encode gzip
-	reverse_proxy app:3000
+	reverse_proxy app:3000 {
+		# Screens reconnect by themselves; don't let a slow backend hold them.
+		health_uri /health
+		health_interval 10s
+		fail_duration 5s
+	}
 }

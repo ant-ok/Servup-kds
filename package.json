@@ -8,7 +8,11 @@
     "migrate": "node src/migrate.js",
     "test": "node --test --test-concurrency=1 test/*.test.js",
     "mock-poster": "node test/mock-poster.js",
-    "simulate": "node scripts/simulate.js"
+    "simulate": "node scripts/simulate.js",
+    "test:fast": "node --test --test-concurrency=1 test/normalize.test.js test/kds.test.js test/kitchen.test.js test/alerts.test.js test/http.test.js test/api.test.js",
+    "test:e2e": "node --test test/e2e.test.js",
+    "test:chaos": "./test/stack/chaos.sh",
+    "doctor": "./scripts/doctor.sh"
   },
   "license": "ISC",
   "dependencies": {

@@ -1,0 +1,57 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: kds
+          POSTGRES_PASSWORD: kds
+          POSTGRES_DB: kds_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U kds" --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DATABASE_URL: postgres://kds:kds@localhost:5432/kds_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Playwright is installed only here, for the browser tests.
+      - run: npm install --no-save playwright@1.63.0 && npx playwright install --with-deps chromium
+      - run: npm test
+
+  stack:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - name: Start mock Poster and the Docker stack (local mode)
+        run: |
+          node test/mock-poster.js &
+          cp .env.example .env
+          sed -i 's#^APP_SECRET=.*#APP_SECRET=ci-secret-123#; s#^PLATFORM_PASSWORD=.*#PLATFORM_PASSWORD=platform-pass#; s#^DB_PASSWORD=.*#DB_PASSWORD=ci-db#; s#^PUBLIC_URL=.*#PUBLIC_URL=http://localhost#' .env
+          echo "POSTER_API_URL=http://host.docker.internal:4100/api" >> .env
+          cat > docker-compose.override.yml <<'YAML'
+          services:
+            app:
+              extra_hosts: ["host.docker.internal:host-gateway"]
+          YAML
+          docker compose up -d --build --wait
+      - name: Chaos test
+        run: ./test/stack/chaos.sh
+      - if: failure()
+        run: docker compose logs --tail 200

@@ -1,21 +1,47 @@
+# One file for both ways to run:
+#   in the cloud  — DOMAIN=kds.example.com (or <ip>.sslip.io): HTTPS, certificates automatic;
+#   in the venue  — DOMAIN empty: plain HTTP on the local network, http://<server-ip>/
+# Everything restarts by itself after a crash, a reboot or a power cut.
+
+x-logging: &logging
+  # Logs never fill the disk: 3 × 10 MB per container.
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   db:
     image: postgres:16-alpine
     restart: always
+    logging: *logging
+    shm_size: 256mb
     environment:
       POSTGRES_USER: kds
       POSTGRES_PASSWORD: ${DB_PASSWORD:-kds}
       POSTGRES_DB: kds
+    command: >
+      postgres
+        -c max_connections=100
+        -c shared_buffers=256MB
+        -c synchronous_commit=on
+        -c wal_level=replica
+        -c checkpoint_timeout=10min
+        -c idle_in_transaction_session_timeout=60s
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U kds"]
       interval: 5s
-      retries: 10
+      timeout: 5s
+      retries: 20
+    stop_grace_period: 30s
 
   app:
     build: .
     restart: always
+    init: true          # proper signal handling and zombie reaping for node
+    logging: *logging
     env_file: .env
     environment:
       NODE_ENV: production
@@ -25,30 +51,58 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+    labels:
+      autoheal: "true"
+    stop_grace_period: 15s
 
-  # Nightly database dump, kept for 30 days in ./backups
+  # Docker restarts a container that exits, but not one that hangs. This one
+  # restarts any container labelled autoheal=true that stays unhealthy.
+  autoheal:
+    image: willfarrell/autoheal:1.2.0
+    restart: always
+    logging: *logging
+    environment:
+      AUTOHEAL_CONTAINER_LABEL: autoheal
+      AUTOHEAL_INTERVAL: 20
+      AUTOHEAL_START_PERIOD: 60
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  # Nightly database dump, kept for 30 days in ./backups. A failed dump never
+  # replaces a good one: it is written to a temp file and moved only on success.
   backup:
     image: postgres:16-alpine
     restart: always
+    logging: *logging
     environment:
       PGPASSWORD: ${DB_PASSWORD:-kds}
     volumes:
       - ./backups:/backups
     entrypoint: >
-      sh -c 'while true; do
-        pg_dump -h db -U kds kds | gzip > /backups/kds_$$(date +%F).sql.gz;
-        find /backups -name "*.sql.gz" -mtime +30 -delete;
+      sh -c 'set -o pipefail; while true; do
+        f=/backups/kds_$$(date +%F_%H%M).sql.gz;
+        if pg_dump -h db -U kds kds | gzip > $$f.tmp; then mv $$f.tmp $$f; echo "backup ok $$f"; else rm -f $$f.tmp; echo "backup FAILED"; fi;
+        find /backups -name "kds_*.sql.gz" -mtime +30 -delete;
         sleep 86400; done'
     depends_on:
       db:
         condition: service_healthy
 
-  # Public entry point: HTTPS with automatic Let's Encrypt certificates.
+  # Entry point. With a domain: HTTPS and automatic Let's Encrypt certificates.
+  # Without one: plain HTTP on port 80 for the venue's local network.
   caddy:
     image: caddy:2-alpine
     restart: always
+    logging: *logging
     environment:
-      DOMAIN: ${DOMAIN}
+      # Empty DOMAIN means local mode: ":80" = plain HTTP on every interface.
+      DOMAIN: ${DOMAIN:-:80}
     ports:
       - "80:80"
       - "443:443"
@@ -56,7 +110,8 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
     depends_on:
-      - app
+      app:
+        condition: service_healthy
 
 volumes:
   pgdata:

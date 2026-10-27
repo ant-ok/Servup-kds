@@ -6,7 +6,14 @@ import { createRequire } from 'node:module';
 import { startServer, pollUntil } from './server-helper.js';
 
 const require = createRequire(import.meta.url);
-const { chromium } = require('playwright');
+let chromium;
+try {
+  ({ chromium } = require('playwright'));
+} catch {
+  // Browser tests need Playwright: CI installs it, locally `npm i --no-save playwright`.
+  console.log('# playwright not installed: browser tests skipped');
+  process.exit(0);
+}
 
 let s;
 let browser;
