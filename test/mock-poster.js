@@ -13,6 +13,7 @@ const methods = {
   'dash.getTransactions': (q) => fake.getTransactions({ status: Number(q.status ?? 0) }),
   'dash.getTransaction': (q) => fake.getTransaction(q.transaction_id),
   'menu.getProducts': () => fake.getProducts(),
+  'menu.getProduct': (q) => fake.getProduct(q.product_id),
   'menu.getWorkshops': () => fake.getWorkshops(),
   'access.getEmployees': () => fake.getEmployees(),
 };

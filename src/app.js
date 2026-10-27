@@ -9,6 +9,7 @@ import {
 } from './auth.js';
 import { applyAction, serveTicket, startSession, endSession, dismissTicket, getBoard, ActionError } from './units.js';
 import { REPORTS, toCsv } from './reports.js';
+import { getSummary, getRecipe, suggestNorms } from './kitchen.js';
 import { createAccount, DEFAULT_SETTINGS } from './accounts.js';
 import { stationResolver } from './sync/reconcile.js';
 import { verifyWebhook, classifyWebhook } from './poster/webhook.js';
@@ -96,6 +97,14 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode })
 
   kds.get('/board', async (req, res) => {
     res.json({ ...(await getBoard(req.device)), serverTime: new Date().toISOString(), health: engines.health(req.device.account_id) });
+  });
+
+  kds.get('/summary', async (req, res) => res.json(await getSummary(req.device, engines.get(req.device.account_id))));
+
+  kds.get('/recipe/:productId', async (req, res) => {
+    const r = await getRecipe(req.device.account_id, Number(req.params.productId), engines.get(req.device.account_id));
+    if (!r) return res.status(404).json({ error: 'Позиция не найдена' });
+    res.json(r);
   });
 
   kds.post('/login', async (req, res) => {
@@ -299,9 +308,17 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode })
   admin.get('/products', async (req, res) => {
     const resolve = await resolverFor(A(req));
     const rows = (await query(
-      `SELECT p.poster_product_id AS id, p.name, p.category_name, p.workshop_id, w.name AS workshop_name, r.rate
+      `SELECT p.poster_product_id AS id, p.name, p.category_name, p.workshop_id, w.name AS workshop_name, r.rate,
+              i.norm_seconds, i.recipe_note, jsonb_array_length(COALESCE(p.recipe, '[]')) AS ingredients,
+              fact.median_sec, fact.samples
        FROM products p LEFT JOIN workshops w ON w.account_id = p.account_id AND w.poster_workshop_id = p.workshop_id
        LEFT JOIN product_rates r ON r.account_id = p.account_id AND r.poster_product_id = p.poster_product_id
+       LEFT JOIN product_info i ON i.account_id = p.account_id AND i.poster_product_id = p.poster_product_id
+       LEFT JOIN LATERAL (
+         SELECT round(percentile_cont(0.5) WITHIN GROUP (ORDER BY extract(epoch FROM u.ready_at - u.taken_at)))::int AS median_sec,
+                count(*)::int AS samples
+         FROM units u WHERE u.account_id = p.account_id AND u.poster_product_id = p.poster_product_id
+           AND u.status = 'ready' AND u.ready_at > u.taken_at AND u.ready_at > now() - interval '30 days') fact ON true
        WHERE p.account_id = $1 AND NOT p.hidden ORDER BY p.category_name NULLS LAST, p.name`, [A(req)])).rows;
     const stationId = req.query.station_id ? Number(req.query.station_id) : null;
     res.json(rows.map((p) => ({ ...p, station_id: resolve(p.workshop_id) }))
@@ -318,6 +335,29 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode })
       await audit(c, { accountId: A(req), actor: 'admin', action: 'rate_changed', details: { productId: Number(req.params.productId), rate } });
     });
     res.json({ ok: true });
+  });
+
+  // Norm (seconds from "taken" to "ready") and the venue's own recipe note.
+  admin.put('/products/:productId/info', async (req, res) => {
+    const b = req.body ?? {};
+    const norm = b.norm_seconds === null || b.norm_seconds === '' ? null : Number(b.norm_seconds);
+    if (norm !== null && norm !== undefined && !(norm > 0 && norm < 24 * 3600)) throw new ActionError('Норма — число секунд больше нуля', 400);
+    await query(
+      `INSERT INTO product_info (account_id, poster_product_id, norm_seconds, recipe_note) VALUES ($1, $2, $3, $4)
+       ON CONFLICT (account_id, poster_product_id) DO UPDATE SET
+         norm_seconds = CASE WHEN $5 THEN EXCLUDED.norm_seconds ELSE product_info.norm_seconds END,
+         recipe_note = CASE WHEN $6 THEN EXCLUDED.recipe_note ELSE product_info.recipe_note END, updated_at = now()`,
+      [A(req), Number(req.params.productId), norm ?? null, b.recipe_note ?? null, b.norm_seconds !== undefined, b.recipe_note !== undefined]);
+    notify(A(req));
+    res.json({ ok: true });
+  });
+  admin.post('/products/norms/suggest', async (req, res) => {
+    res.json({ ok: true, updated: await suggestNorms(A(req), { overwrite: !!req.body?.overwrite }) });
+  });
+  admin.get('/products/:productId/recipe', async (req, res) => {
+    const r = await getRecipe(A(req), Number(req.params.productId), engines.get(A(req)));
+    if (!r) return res.status(404).json({ error: 'Позиция не найдена' });
+    res.json(r);
   });
 
   // -- devices
@@ -357,14 +397,16 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode })
   const REPORT_COLUMNS = {
     makers: [['name', 'Сотрудник'], ['stations', 'Станции'], ['portions', 'Порций сделано'], ['earned', 'Начислено'],
       ['without_rate', 'Порций без ставки'], ['checks', 'Чеков'], ['avg_make_sec', 'Ср. приготовление, сек'],
-      ['avg_total_sec', 'Ср. от заказа до готовности, сек'], ['made_then_removed', 'Сделано, затем удалено из чека']],
+      ['avg_total_sec', 'Ср. от заказа до готовности, сек'], ['within_norm_pct', 'В норму, %'],
+      ['made_then_removed', 'Сделано, затем удалено из чека']],
     sellers: [['name', 'Сотрудник'], ['checks', 'Закрыто чеков'], ['payed', 'Оплачено'], ['total', 'Сумма чеков'],
       ['avg_check', 'Средний чек'], ['kds_portions', 'Порций через KDS']],
     runners: [['name', 'Сотрудник'], ['tickets', 'Выдано заказов'], ['avg_wait_sec', 'Ср. ожидание на раздаче, сек'],
       ['avg_total_sec', 'Ср. от заказа до выдачи, сек']],
     stations: [['name', 'Станция'], ['portions', 'Порций'], ['avg_total_sec', 'Ср. время, сек'], ['p90_total_sec', '90% заказов быстрее, сек'],
       ['earned', 'Начислено'], ['people', 'Сотрудников']],
-    products: [['name', 'Позиция'], ['station', 'Станция'], ['portions', 'Порций'], ['avg_total_sec', 'Ср. время, сек'], ['rate', 'Ставка'],
+    products: [['name', 'Позиция'], ['station', 'Станция'], ['portions', 'Порций'], ['avg_total_sec', 'Ср. время, сек'],
+      ['avg_make_sec', 'Ср. приготовление, сек'], ['norm_sec', 'Норма, сек'], ['within_norm_pct', 'В норму, %'], ['rate', 'Ставка'],
       ['made_then_removed', 'Сделано, затем удалено']],
     details: [['created_at', 'Заказано'], ['ready_at', 'Готово'], ['station', 'Станция'], ['check_id', 'Чек'], ['table_name', 'Стол'],
       ['name', 'Позиция'], ['modifiers', 'Модификатор'], ['sold_by', 'Продал'], ['taken_by', 'Взял'], ['made_by', 'Сделал'],

@@ -7,7 +7,7 @@ import { EventEmitter } from 'node:events';
 import { config } from '../config.js';
 import { query, tx, getSettings } from '../db.js';
 import { createPosterClient } from '../poster/client.js';
-import { normalizeTransaction, normalizeCatalogProduct } from '../poster/normalize.js';
+import { normalizeTransaction, normalizeCatalogProduct, normalizeRecipe } from '../poster/normalize.js';
 import { reconcileTransaction, stationResolver } from './reconcile.js';
 
 // Syncs one venue.
@@ -88,11 +88,15 @@ export class SyncEngine extends EventEmitter {
         const p = normalizeCatalogProduct(raw);
         if (!p.id) continue;
         await c.query(
-          `INSERT INTO products (account_id, poster_product_id, name, category_name, workshop_id, modifications, hidden, updated_at)
-           VALUES ($7,$1,$2,$3,$4,$5,$6, now())
+          `INSERT INTO products (account_id, poster_product_id, name, category_name, workshop_id, modifications, hidden, photo,
+             recipe, recipe_fetched_at, updated_at)
+           VALUES ($7,$1,$2,$3,$4,$5,$6,$8,$9, CASE WHEN $9::jsonb IS NULL THEN NULL ELSE now() END, now())
            ON CONFLICT (account_id, poster_product_id) DO UPDATE SET name=EXCLUDED.name, category_name=EXCLUDED.category_name,
-             workshop_id=EXCLUDED.workshop_id, modifications=EXCLUDED.modifications, hidden=EXCLUDED.hidden, updated_at=now()`,
-          [p.id, p.name, p.category, p.workshopId, p.modifications, p.hidden, this.accountId],
+             workshop_id=EXCLUDED.workshop_id, modifications=EXCLUDED.modifications, hidden=EXCLUDED.hidden, photo=EXCLUDED.photo,
+             recipe=COALESCE(EXCLUDED.recipe, products.recipe),
+             recipe_fetched_at=COALESCE(EXCLUDED.recipe_fetched_at, products.recipe_fetched_at), updated_at=now()`,
+          [p.id, p.name, p.category, p.workshopId, p.modifications, p.hidden, this.accountId, p.photo,
+           p.recipe ? JSON.stringify(p.recipe) : null],
         );
       }
       for (const w of workshops) {
@@ -116,6 +120,25 @@ export class SyncEngine extends EventEmitter {
     });
     await this.loadCatalogFromDb();
     this.health.lastCatalogAt = new Date().toISOString();
+  }
+
+  // Tech cards are fetched from Poster on first use and refreshed twice a day.
+  // Products without a tech card (a bottle of beer) cache an empty recipe.
+  async ensureRecipes(productIds) {
+    const { rows } = await query(
+      `SELECT poster_product_id AS id FROM products WHERE account_id = $1 AND poster_product_id = ANY($2)
+         AND (recipe_fetched_at IS NULL OR recipe_fetched_at < now() - interval '12 hours')`,
+      [this.accountId, productIds]);
+    for (const { id } of rows.slice(0, 20)) {
+      try {
+        const raw = await this.poster.getProduct(id);
+        const recipe = normalizeRecipe(Array.isArray(raw) ? raw[0] : raw);
+        await query('UPDATE products SET recipe = $3, recipe_fetched_at = now() WHERE account_id = $1 AND poster_product_id = $2',
+          [this.accountId, id, JSON.stringify(recipe)]);
+      } catch (err) {
+        this.fail(`recipe ${id}`, err);
+      }
+    }
   }
 
   // Business days cross midnight, so always look at yesterday and today.

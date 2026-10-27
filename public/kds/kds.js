@@ -14,6 +14,10 @@ const deviceToken = store.get('kds_device', null);
 
 const state = {
   tickets: [],
+  summaryOpen: store.get('kds_summary', false),
+  summaryTab: 'items',
+  summary: null,
+  filterKey: null,
   station: { name: '', kind: 'prep', group_items: false },
   serverOffset: 0,          // server clock - local clock
   settings: { warnMinutes: 5, criticalMinutes: 10, undoWindowSec: 300, makerTitle: 'Сотрудник' },
@@ -74,6 +78,7 @@ async function loadBoard() {
       data.tickets.forEach((t) => state.seen.add(t.id));
       state.tickets = data.tickets;
       state.station = data.station;
+      if (state.summaryOpen) loadSummary();
       state.online = true;
       render();
     } catch (err) {
@@ -254,12 +259,84 @@ async function onServe(t) {
   enqueueOp(`/tickets/${t.id}/serve`, {});
 }
 
+// ---- side summary: how much to make in total ------------------------------------
+async function loadSummary() {
+  try {
+    state.summary = await api('/summary');
+    renderSummary();
+  } catch { /* the board shows connection state */ }
+}
+
+function renderSummary() {
+  $('summary').classList.toggle('hidden', !state.summaryOpen);
+  $('summaryBtn').classList.toggle('active', state.summaryOpen);
+  if (!state.summaryOpen || !state.summary) return;
+  const s = state.summary;
+  document.querySelectorAll('[data-st]').forEach((b) => b.classList.toggle('active', b.dataset.st === state.summaryTab));
+  $('sumTotal').textContent = s.total ? `Всего к приготовлению: ${s.total}` : 'Всё приготовлено';
+  const body = $('sumBody');
+  body.innerHTML = '';
+  if (state.summaryTab === 'items') {
+    for (const i of s.items) {
+      const b = document.createElement('button');
+      b.className = `sum-row${state.filterKey === i.item_key ? ' active' : ''}`;
+      b.innerHTML = `<span class="n">${i.portions}</span><span class="t">${esc(i.name)}${i.modifiers ? `<small>${esc(i.modifiers)}</small>` : ''}${i.taken ? `<em>в работе: ${i.taken}</em>` : ''}</span>`;
+      // Tap: highlight the orders that contain this item.
+      b.onclick = () => { state.filterKey = state.filterKey === i.item_key ? null : i.item_key; render(); renderSummary(); };
+      body.appendChild(b);
+    }
+  } else {
+    for (const i of s.ingredients) {
+      const row = document.createElement('div');
+      row.className = 'sum-row';
+      row.innerHTML = `<span class="n" style="min-width:90px;font-size:20px">${Number(i.amount).toLocaleString('ru-RU')} ${esc(i.unit)}</span><span class="t">${esc(i.name)}</span>`;
+      body.appendChild(row);
+    }
+    if (!s.ingredients.length) body.innerHTML = '<p class="sum-note">Нет данных техкарт для открытых позиций.</p>';
+    if (s.withoutRecipe.length) body.insertAdjacentHTML('beforeend', `<p class="sum-note">Без техкарты в Poster: ${s.withoutRecipe.map(esc).join(', ')}</p>`);
+  }
+}
+
+function toggleSummary(open = !state.summaryOpen) {
+  state.summaryOpen = open;
+  store.set('kds_summary', open);
+  if (!open) state.filterKey = null;
+  renderSummary();
+  render();
+  if (open) loadSummary();
+}
+
+// ---- recipe ----------------------------------------------------------------------
+async function openRecipe(productId, portions) {
+  try {
+    const r = await api(`/recipe/${productId}`);
+    $('recipeName').textContent = portions > 1 ? `${r.name} × ${portions}` : r.name;
+    const photo = $('recipePhoto');
+    photo.classList.toggle('hidden', !r.photo);
+    if (r.photo) { photo.src = r.photo; photo.onerror = () => photo.classList.add('hidden'); }
+    const rows = r.ingredients.map((i) => {
+      const amount = Math.round(i.netto * portions * 100) / 100;
+      return `<tr><td>${esc(i.name)}</td><td class="amt">${amount.toLocaleString('ru-RU')} ${esc(i.unit)}</td></tr>`;
+    }).join('');
+    $('recipeBody').innerHTML = `
+      ${rows ? `<table>${rows}</table>` : '<p class="recipe-meta">В Poster нет техкарты для этой позиции.</p>'}
+      ${r.note ? `<div class="recipe-note">${esc(r.note)}</div>` : ''}
+      ${r.normSeconds ? `<p class="recipe-meta">Норма приготовления: ${fmt(r.normSeconds)}</p>` : ''}`;
+    $('recipe').classList.remove('hidden');
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
 // ---- rendering ------------------------------------------------------------------
 const fmt = (sec) => {
   sec = Math.max(0, Math.floor(sec));
   return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
 };
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// Comments that must not be missed.
+const ALERT = /аллерг|allerg|непереносим|без глютен|без лактоз|орех/i;
 
 function groupUnits(list) {
   if (!state.station.group_items) return list.map((u) => [u]);
@@ -281,7 +358,13 @@ function unitRow(group, { expo }) {
   const qty = Number(u.qty) !== 1 ? ` × ${u.qty}` : '';
   const count = group.length > 1 ? `<span class="count">×${group.length}</span>` : '';
   const station = expo && u.station_name ? `<span class="station">${esc(u.station_name)}</span>` : '';
-  li.innerHTML = `<span class="box"></span><span class="name">${count}${esc(u.name)}${qty}${u.modifiers ? `<span class="mod">${esc(u.modifiers)}</span>` : ''}</span>${station}<span class="who">${esc(who)}</span>`;
+  const mod = u.modifiers ? `<span class="mod${/^\s*(без|-)/i.test(u.modifiers) ? ' minus' : ''}">${esc(u.modifiers)}</span>` : '';
+  // Per-portion timer from "taken" against the norm for this product.
+  const timer = u.status === 'taken' && u.taken_at
+    ? `<span class="rtimer" data-taken="${esc(u.taken_at)}" data-norm="${u.norm_seconds ?? ''}"></span>` : '';
+  if (state.filterKey && u.item_key === state.filterKey) li.classList.add('hl');
+  li.innerHTML = `<span class="box"></span><span class="name">${count}${esc(u.name)}${qty}${mod}</span>${station}${timer}<span class="who">${esc(who)}</span><button class="info" title="Рецептура">i</button>`;
+  li.querySelector('.info').onclick = (e) => { e.stopPropagation(); openRecipe(u.product_id, group.length * Number(u.qty || 1)); };
   if (!expo) li.onclick = () => onRowTap(group);
   return li;
 }
@@ -303,6 +386,7 @@ function render() {
     card.className = 'ticket';
     card.dataset.created = t.created_at;
     if (expo && live.length && readyCnt === live.length) card.classList.add('all-ready');
+    if (state.filterKey && !t.units.some((u) => u.item_key === state.filterKey && isOpen(u))) card.classList.add('dim');
     else if (!open.length && !expo) card.classList.add('cancelled');
     card.innerHTML = `
       <div class="t-head">
@@ -310,7 +394,7 @@ function render() {
           <span class="timer"></span></div>
         <div class="meta">Чек ${t.transaction_id} · ${esc(t.waiter_name || '—')}${t.tablet_id ? ` · касса ${t.tablet_id}` : ''}${t.hall_name ? ` · ${esc(t.hall_name)}` : ''}${t.guests ? ` · гостей ${t.guests}` : ''}${t.check_status === 2 ? ' · оплачен' : ''}${expo ? ` · готово ${readyCnt}/${live.length}` : ''}</div>
       </div>
-      ${t.comment ? `<div class="comment">${esc(t.comment)}</div>` : ''}
+      ${t.comment ? `<div class="comment${ALERT.test(t.comment) ? ' alert' : ''}">${ALERT.test(t.comment) ? '⚠ ' : ''}${esc(t.comment)}</div>` : ''}
       <ul class="units"></ul>
       <div class="t-actions"></div>`;
     const ul = card.querySelector('.units');
@@ -380,6 +464,12 @@ function tick() {
     card.classList.toggle('warn', sec >= state.settings.warnMinutes * 60 && sec < state.settings.criticalMinutes * 60);
     card.classList.toggle('crit', sec >= state.settings.criticalMinutes * 60);
   }
+  for (const el of document.querySelectorAll('.rtimer')) {
+    const sec = (now - new Date(el.dataset.taken)) / 1000;
+    const norm = Number(el.dataset.norm);
+    el.textContent = norm ? `${fmt(sec)} / ${fmt(norm)}` : fmt(sec);
+    el.classList.toggle('over', !!norm && sec > norm);
+  }
 }
 setInterval(tick, 1000);
 
@@ -399,6 +489,7 @@ async function start() {
 
   try { Object.assign(state.settings, (await api('/me')).settings); } catch (err) { if (err.code === 'device') return showUnpaired(); }
   $('addStaff').textContent = `+ ${state.settings.makerTitle}`;
+  renderSummary();
 
   const socket = io({ auth: { deviceToken }, transports: ['websocket', 'polling'] });
   socket.on('connect', () => { state.online = true; loadBoard(); flush(); });
@@ -417,6 +508,11 @@ async function start() {
 
 buildPinPad();
 renderStaff();
+$('summaryBtn').onclick = () => toggleSummary();
+$('summaryClose').onclick = () => toggleSummary(false);
+document.querySelectorAll('[data-st]').forEach((b) => { b.onclick = () => { state.summaryTab = b.dataset.st; renderSummary(); }; });
+$('recipeClose').onclick = () => $('recipe').classList.add('hidden');
+$('recipe').onclick = (e) => { if (e.target.id === 'recipe') $('recipe').classList.add('hidden'); };
 $('addStaff').onclick = () => askPin();
 $('startBtn').onclick = start;
 if (!deviceToken) showUnpaired();

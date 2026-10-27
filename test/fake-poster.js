@@ -4,8 +4,18 @@ export class FakePoster {
   constructor() {
     this.workshops = [{ workshop_id: '1', workshop_name: 'Бар' }, { workshop_id: '2', workshop_name: 'Кухня' }];
     this.products = [
-      { product_id: '10', product_name: 'Мохито', category_name: 'Коктейли', workshop: '1', modifications: [] },
-      { product_id: '11', product_name: 'Негрони', category_name: 'Коктейли', workshop: '1', modifications: [] },
+      { product_id: '10', product_name: 'Мохито', category_name: 'Коктейли', workshop: '1', modifications: [],
+        ingredients: [
+          { ingredient_name: 'Ром белый', structure_unit: 'ml', structure_netto: '50' },
+          { ingredient_name: 'Лайм', structure_unit: 'p', structure_netto: '0.5' },
+          { ingredient_name: 'Мята', structure_unit: 'g', structure_netto: '5' },
+        ] },
+      { product_id: '11', product_name: 'Негрони', category_name: 'Коктейли', workshop: '1', modifications: [],
+        ingredients: [
+          { ingredient_name: 'Джин', structure_unit: 'ml', structure_netto: '30' },
+          { ingredient_name: 'Кампари', structure_unit: 'ml', structure_netto: '30' },
+          { ingredient_name: 'Вермут красный', structure_unit: 'ml', structure_netto: '30' },
+        ] },
       { product_id: '12', product_name: 'Латте', category_name: 'Кофе', workshop: '1',
         modifications: [{ modificator_id: '1', modificator_name: 'Овсяное молоко' }, { modificator_id: '2', modificator_name: 'Без сахара' }] },
       { product_id: '13', product_name: 'Пиво разливное', category_name: 'Пиво', workshop: '1', modifications: [] },
@@ -66,7 +76,11 @@ export class FakePoster {
     return this.clone([...this.transactions.values()].filter((t) => !status || Number(t.status) === status));
   }
   async getTransaction(id) { return this.clone(this.transactions.get(String(id)) ?? null); }
-  async getProducts() { return this.clone(this.products); }
+  async getProducts() { return this.clone(this.products.map(({ ingredients, ...p }) => p)); }
+  async getProduct(id) {
+    this.productCalls = (this.productCalls ?? 0) + 1;
+    return this.clone(this.products.find((p) => p.product_id === String(id)) ?? null);
+  }
   async getWorkshops() { return this.clone(this.workshops); }
   async getEmployees() { return this.clone(this.employees); }
 }

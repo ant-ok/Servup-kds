@@ -15,12 +15,25 @@
     <div class="station-name" id="stationName"></div>
     <div class="status" id="status"><span class="dot"></span><span id="statusText">Подключение…</span></div>
     <div class="staff" id="staff"></div>
+    <button class="summary-btn" id="summaryBtn">Σ Сводка</button>
     <button class="add-staff" id="addStaff">+ Сотрудник</button>
     <div class="clock" id="clock"></div>
   </header>
 
-  <main id="board" class="board"></main>
-  <section id="doneStrip" class="done-strip"></section>
+  <div class="layout">
+    <div class="main-col">
+      <main id="board" class="board"></main>
+      <section id="doneStrip" class="done-strip"></section>
+    </div>
+    <aside id="summary" class="summary hidden">
+      <div class="sum-head">
+        <div class="sum-tabs"><button data-st="items" class="active">Позиции</button><button data-st="ingredients">Ингредиенты</button></div>
+        <button class="sum-close" id="summaryClose">✕</button>
+      </div>
+      <div class="sum-total" id="sumTotal"></div>
+      <div id="sumBody"></div>
+    </aside>
+  </div>
 
   <div id="empty" class="empty hidden">Заказов нет</div>
   <div id="toast" class="toast hidden"></div>
@@ -40,6 +53,14 @@
       <div class="pin-grid" id="pinGrid"></div>
       <div class="pin-error" id="pinError"></div>
       <button class="link" id="pinCancel">Отмена</button>
+    </div>
+  </div>
+
+  <div id="recipe" class="overlay hidden">
+    <div class="panel recipe-panel">
+      <div class="recipe-head"><h2 id="recipeName"></h2><button class="sum-close" id="recipeClose">✕</button></div>
+      <img id="recipePhoto" class="recipe-photo hidden" alt="">
+      <div id="recipeBody"></div>
     </div>
   </div>
 

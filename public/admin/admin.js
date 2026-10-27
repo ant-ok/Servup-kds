@@ -121,6 +121,7 @@ views.reports = async () => {
     { key: 'checks', title: 'Чеков', num: true },
     { key: 'avg_make_sec', title: 'Ср. приготовление', num: true, fmt: dur },
     { key: 'avg_total_sec', title: 'Ср. ожидание гостя', num: true, fmt: dur },
+    { key: 'within_norm_pct', title: 'В норму', num: true, fmt: (v) => (v == null ? '—' : `${v}%`) },
     { key: 'without_rate', title: 'Без ставки', num: true },
     { key: 'made_then_removed', title: 'Сделано→удалено', num: true },
   ], bart, {
@@ -165,7 +166,9 @@ views.reports = async () => {
   const c3 = card('Позиции', csvLink('products'));
   c3.appendChild(table([
     { key: 'name', title: 'Позиция' }, { key: 'station', title: 'Станция' }, { key: 'portions', title: 'Порций', num: true },
-    { key: 'avg_total_sec', title: 'Ср. время', num: true, fmt: dur }, { key: 'rate', title: 'Ставка', num: true, fmt: money },
+    { key: 'avg_make_sec', title: 'Ср. приготовление', num: true, fmt: dur }, { key: 'norm_sec', title: 'Норма', num: true, fmt: dur },
+    { key: 'within_norm_pct', title: 'В норму', num: true, fmt: (v) => (v == null ? '—' : `${v}%`) },
+    { key: 'rate', title: 'Ставка', num: true, fmt: money },
   ], prods));
   view.appendChild(c3);
 
@@ -281,16 +284,45 @@ views.rates = async () => {
   list.forEach((p) => { p.station_name = stName.get(p.station_id); });
   const view = $('view');
   view.innerHTML = '';
-  const c = card('Сдельные ставки за приготовление');
-  c.insertAdjacentHTML('beforeend', '<p class="muted">Сколько получает сотрудник за одну приготовленную порцию. Ставка фиксируется в момент отметки «готово»: если её изменить, прошлые начисления не пересчитаются.</p>');
+  const c = card('Позиции: ставки, нормы времени, рецептура',
+    '<button class="light small" id="suggest">Заполнить нормы по факту</button>');
+  c.insertAdjacentHTML('beforeend', `<p class="muted"><b>Ставка</b> — сколько получает сотрудник за порцию; фиксируется в момент отметки «готово».
+    <b>Норма</b> — сколько секунд от «взял» до «готово»; на экране таймер краснеет, если дольше. «Заполнить по факту» берёт время,
+    за которое делали 75% порций за последние 30 дней. <b>Техкарта</b> подтягивается из Poster; заметка — ваши подсказки по приготовлению и подаче.</p>`);
   c.appendChild(table([
     { key: 'station_name', title: 'Станция' }, { key: 'category_name', title: 'Категория' }, { key: 'name', title: 'Позиция' },
-    { key: 'workshop_name', title: 'Цех Poster' },
-    { key: 'rate', title: 'Ставка, ₽', html: (r) => `<input type="number" min="0" step="1" style="width:100px" data-rate="${r.id}" value="${r.rate ?? ''}" placeholder="—">` },
+    { key: 'rate', title: 'Ставка, ₽', html: (r) => `<input type="number" min="0" step="1" style="width:90px" data-rate="${r.id}" value="${r.rate ?? ''}" placeholder="—">` },
+    { key: 'norm_seconds', title: 'Норма, сек', html: (r) => `<input type="number" min="1" step="5" style="width:90px" data-norm="${r.id}" value="${r.norm_seconds ?? ''}" placeholder="—">` },
+    { key: 'median_sec', title: 'Факт (медиана)', num: true, fmt: (v, r) => (v == null ? '—' : `${dur(v)} (${r.samples})`) },
+    { key: 'ingredients', title: 'Техкарта', html: (r) => `<button class="light small" data-recipe="${r.id}">${r.ingredients ? `${r.ingredients} ингр.` : 'открыть'}</button>` },
+    { key: 'recipe_note', title: 'Заметка', html: (r) => `<button class="light small" data-note="${r.id}" title="${esc(r.recipe_note ?? '')}">${r.recipe_note ? 'изменить' : '+ добавить'}</button>` },
   ], list));
   view.appendChild(c);
   c.querySelectorAll('[data-rate]').forEach((el) => {
     el.onchange = run(async () => { await api(`/rates/${el.dataset.rate}`, { method: 'PUT', body: { rate: Number(el.value || 0) } }); toast('Ставка сохранена'); });
+  });
+  c.querySelectorAll('[data-norm]').forEach((el) => {
+    el.onchange = run(async () => { await api(`/products/${el.dataset.norm}/info`, { method: 'PUT', body: { norm_seconds: el.value ? Number(el.value) : null } }); toast('Норма сохранена'); });
+  });
+  c.querySelectorAll('[data-note]').forEach((b) => {
+    b.onclick = run(async () => {
+      const current = list.find((p) => String(p.id) === b.dataset.note)?.recipe_note ?? '';
+      const note = prompt('Заметка к рецептуре (видна на экране по кнопке «i»)', current);
+      if (note === null) return;
+      await api(`/products/${b.dataset.note}/info`, { method: 'PUT', body: { recipe_note: note.trim() || null } });
+      render();
+    });
+  });
+  c.querySelectorAll('[data-recipe]').forEach((b) => {
+    b.onclick = run(async () => {
+      const r = await api(`/products/${b.dataset.recipe}/recipe`);
+      alert(r.ingredients.length ? `${r.name}:\n${r.ingredients.map((i) => `• ${i.name} — ${i.netto} ${i.unit}`).join('\n')}` : `${r.name}: в Poster нет техкарты`);
+    });
+  });
+  c.querySelector('#suggest').onclick = run(async () => {
+    const r = await api('/products/norms/suggest', { method: 'POST', body: {} });
+    toast(r.updated ? `Нормы заполнены: ${r.updated}` : 'Мало данных: нужно хотя бы 5 приготовленных порций за 30 дней');
+    render();
   });
 };
 

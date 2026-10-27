@@ -34,8 +34,11 @@ export async function makers(q) {
         round(avg(extract(epoch FROM u.ready_at - u.taken_at)) FILTER (WHERE ${CREDITED}))   AS avg_make_sec,
         round(avg(extract(epoch FROM u.ready_at - u.created_at)) FILTER (WHERE ${CREDITED})) AS avg_total_sec,
         count(DISTINCT u.transaction_id) FILTER (WHERE ${CREDITED})      AS checks,
-        string_agg(DISTINCT s.name, ', ')                                AS stations
+        string_agg(DISTINCT s.name, ', ')                                AS stations,
+        round(100.0 * count(*) FILTER (WHERE ${CREDITED} AND u.ready_at - u.taken_at <= make_interval(secs => pi.norm_seconds))
+              / NULLIF(count(*) FILTER (WHERE ${CREDITED} AND pi.norm_seconds IS NOT NULL), 0)) AS within_norm_pct
      FROM units u JOIN employees e ON e.id = u.ready_by LEFT JOIN stations s ON s.id = u.station_id
+     LEFT JOIN product_info pi ON pi.account_id = u.account_id AND pi.poster_product_id = u.poster_product_id
      WHERE u.account_id = $1 AND u.ready_at >= $2 AND u.ready_at < $3 AND ($5::int IS NULL OR u.station_id = $5)
      GROUP BY e.id, e.name ORDER BY earned DESC, portions DESC`,
     [q.accountId, p.a, p.b, p.creditRemoved, station(q.stationId)]);
@@ -98,8 +101,13 @@ export async function products(q) {
         count(*) FILTER (WHERE ${CREDITED})                                                     AS portions,
         round(avg(extract(epoch FROM u.ready_at - u.created_at)) FILTER (WHERE ${CREDITED}))   AS avg_total_sec,
         count(*) FILTER (WHERE u.made_then_removed)                                            AS made_then_removed,
-        max(u.rate)                                                                            AS rate
+        max(u.rate)                                                                            AS rate,
+        max(pi.norm_seconds)                                                                   AS norm_sec,
+        round(avg(extract(epoch FROM u.ready_at - u.taken_at)) FILTER (WHERE ${CREDITED}))     AS avg_make_sec,
+        round(100.0 * count(*) FILTER (WHERE ${CREDITED} AND u.ready_at - u.taken_at <= make_interval(secs => pi.norm_seconds))
+              / NULLIF(count(*) FILTER (WHERE ${CREDITED} AND pi.norm_seconds IS NOT NULL), 0))        AS within_norm_pct
      FROM units u LEFT JOIN stations s ON s.id = u.station_id
+     LEFT JOIN product_info pi ON pi.account_id = u.account_id AND pi.poster_product_id = u.poster_product_id
      WHERE u.account_id = $1 AND u.ready_at >= $2 AND u.ready_at < $3 AND ($5::int IS NULL OR u.station_id = $5)
      GROUP BY 1, 2, 3 ORDER BY portions DESC`, [q.accountId, p.a, p.b, p.creditRemoved, station(q.stationId)]);
   return rows;

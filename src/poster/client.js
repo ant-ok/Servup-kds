@@ -62,6 +62,7 @@ export function createPosterClient(token) {
       return t ?? null;
     },
     getProducts: async () => listOf(await api('menu.getProducts')),
+    getProduct: async (id) => api('menu.getProduct', { product_id: id }),
     getWorkshops: async () => listOf(await api('menu.getWorkshops')),
     getEmployees: async () => listOf(await api('access.getEmployees')),
   };

@@ -71,5 +71,23 @@ export function normalizeCatalogProduct(p) {
     workshopId: int(first(p, 'workshop', 'workshop_id')),
     hidden: String(first(p, 'hidden') ?? '0') === '1',
     modifications: mods,
+    photo: first(p, 'photo_origin', 'photo') ?? null,
+    // Some API versions already include the tech card in the menu list.
+    recipe: Array.isArray(p.ingredients) ? normalizeRecipe(p) : null,
   };
+}
+
+const UNITS = { g: 'г', gr: 'г', kg: 'кг', ml: 'мл', l: 'л', p: 'шт', pcs: 'шт', pc: 'шт', шт: 'шт' };
+
+// Tech card from menu.getProduct: [{ name, netto, unit }]. Weights in a
+// Poster tech card are per one portion.
+export function normalizeRecipe(p) {
+  return (Array.isArray(p?.ingredients) ? p.ingredients : []).map((i) => {
+    const unitRaw = String(first(i, 'structure_unit', 'ingredient_unit', 'unit') ?? '').toLowerCase();
+    return {
+      name: first(i, 'ingredient_name', 'name', 'product_name') ?? 'Ингредиент',
+      netto: Number(first(i, 'structure_netto', 'netto', 'structure_brutto', 'brutto', 'amount') ?? 0),
+      unit: UNITS[unitRaw] ?? unitRaw,
+    };
+  }).filter((i) => i.netto > 0);
 }
