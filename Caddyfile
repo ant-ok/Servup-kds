@@ -1,0 +1,5 @@
+# HTTPS certificate is issued automatically for the domain in DOMAIN.
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy app:3000
+}
