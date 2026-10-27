@@ -22,6 +22,8 @@ export const config = {
   // Public https address of this installation, used for Poster OAuth redirects.
   publicUrl: env('PUBLIC_URL', 'http://localhost:3000'),
   timezone: env('TZ_NAME', 'Europe/Moscow'),
+  // Who may show our pages in a frame: Poster's admin panel and its register app.
+  frameAncestors: env('FRAME_ANCESTORS', 'https://joinposter.com https://*.joinposter.com https://pos.ps https://*.pos.ps'),
 
   poster: {
     apiUrl: env('POSTER_API_URL', 'https://joinposter.com/api'),

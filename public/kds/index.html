@@ -43,6 +43,11 @@
       <h1>KDS</h1>
       <p id="startMsg">Нажмите, чтобы начать смену</p>
       <button class="big" id="startBtn">Начать</button>
+      <form id="pairForm" class="pair hidden">
+        <input id="pairCode" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000">
+        <button class="big">Подключить</button>
+        <div class="pin-error" id="pairError"></div>
+      </form>
     </div>
   </div>
 

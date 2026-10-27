@@ -40,9 +40,14 @@ function readSession(req, kind) {
   if (!subject || !(Number(exp) > Date.now()) || !safeEqual(sig, hmac(`${kind}.${subject}.${exp}`))) return null;
   return subject;
 }
+// Over HTTPS the cookie is SameSite=None so the admin panel also works when
+// Poster shows it inside its own admin (an iframe). Browsers only accept None
+// together with Secure, so plain-HTTP local installs keep Lax.
+export const cookieAttrs = (publicUrl = config.publicUrl) =>
+  (publicUrl.startsWith('https') ? 'SameSite=None; Secure; Partitioned' : 'SameSite=Lax');
+
 export function setSessionCookie(res, kind, value, maxAgeSec = TTL / 1000) {
-  const secure = config.publicUrl.startsWith('https') ? '; Secure' : '';
-  res.append('Set-Cookie', `${COOKIE[kind]}=${value}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAgeSec}${secure}`);
+  res.append('Set-Cookie', `${COOKIE[kind]}=${value}; HttpOnly; ${cookieAttrs()}; Path=/; Max-Age=${maxAgeSec}`);
 }
 
 export async function requireAdmin(req, res, next) {
@@ -67,7 +72,7 @@ export async function deviceByToken(token) {
   const { rows } = await query(
     `UPDATE devices d SET last_seen_at = now() FROM accounts a
      WHERE d.token_hash = $1 AND d.active AND a.id = d.account_id AND a.active
-     RETURNING d.id, d.name, d.account_id, d.station_id`, [hmac(token)]);
+     RETURNING d.id, d.name, d.account_id, d.station_id, d.kind`, [hmac(token)]);
   return rows[0] ?? null;
 }
 
@@ -97,3 +102,15 @@ export const checkOauthState = (state) => {
   const [payload, exp, sig] = String(state ?? '').split('.');
   return Number(exp) > Date.now() && safeEqual(sig, hmac(`oauth.${payload}.${exp}`)) ? payload : null;
 };
+
+// --- one-time pairing codes for screens and Poster registers ---------------
+export const newPairCode = () => String(crypto.randomInt(100000, 1000000));
+
+const pairFailures = new Map();
+export function pairAttemptAllowed(ip) {
+  const now = Date.now();
+  const list = (pairFailures.get(ip) ?? []).filter((t) => now - t < 10 * 60e3);
+  pairFailures.set(ip, list);
+  return list.length < 10;
+}
+export const pairFailed = (ip) => pairFailures.set(ip, [...(pairFailures.get(ip) ?? []), Date.now()]);

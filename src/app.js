@@ -8,7 +8,9 @@ import { pool, query, tx, audit, getSettings } from './db.js';
 import {
   requireAdmin, requireDevice, requirePlatform, signSession, setSessionCookie, platformLogin, verifyPassword,
   hashPassword, pinAttemptAllowed, pinFailed, pinLookup, newToken, hmac, oauthState, checkOauthState,
+  newPairCode, pairAttemptAllowed, pairFailed,
 } from './auth.js';
+import { orderStatus } from './pos.js';
 import { applyAction, serveTicket, startSession, endSession, dismissTicket, getBoard, ActionError } from './units.js';
 import { REPORTS, toCsv } from './reports.js';
 import { getSummary, getRecipe, suggestNorms } from './kitchen.js';
@@ -34,8 +36,32 @@ const PRESETS = ['bar', 'restaurant'];
 export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode, exchangeManage = exchangeManageCode, telegram = null }) {
   const app = express();
   app.disable('x-powered-by');
+  app.set('trust proxy', 'loopback, uniquelocal'); // behind Caddy: real client IPs for rate limits
   app.use(express.json({ limit: '1mb' }));
   app.use(express.urlencoded({ extended: false }));
+
+  // Pages may be shown inside Poster (admin panel, register app), nowhere else.
+  app.use((req, res, next) => {
+    res.setHeader('Content-Security-Policy', `frame-ancestors 'self' ${config.frameAncestors}`);
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'same-origin');
+    next();
+  });
+
+  // The register app runs on Poster's origin and calls us with a device token
+  // (never cookies), so any origin may call these routes.
+  const cors = (req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', 'content-type, x-device-token');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Max-Age', '600');
+    // Private Network Access preflight: lets a register reach a KDS on the venue's LAN
+    // in browsers that ask the server (newer ones ask the user instead).
+    if (req.get('access-control-request-private-network')) res.setHeader('Access-Control-Allow-Private-Network', 'true');
+    if (req.method === 'OPTIONS') return res.status(204).end();
+    next();
+  };
+  app.use(['/api/kds', '/api/pos', '/api/pair'], cors);
 
   app.use(express.static(publicDir, { extensions: ['html'] }));
   // For an external uptime monitor: 200 while the DB answers, 503 otherwise.
@@ -148,6 +174,28 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode, e
     return acc;
   }
 
+  // ---- Pairing: a screen or a register enters the 6-digit code from the admin --
+  app.post('/api/pair', async (req, res) => {
+    const ip = req.ip;
+    if (!pairAttemptAllowed(ip)) return res.status(429).json({ error: 'Слишком много попыток, подождите 10 минут' });
+    const code = String(req.body?.code ?? '').replace(/\D/g, '');
+    const token = newToken();
+    const { rows } = await query(
+      `UPDATE devices d SET token_hash = $2, pair_code = NULL, pair_exp = NULL, last_seen_at = now(),
+         poster_tablet_id = COALESCE($3, d.poster_tablet_id)
+       FROM accounts a
+       WHERE d.pair_code = $1 AND d.pair_exp > now() AND d.active AND a.id = d.account_id AND a.active
+       RETURNING d.id, d.name, d.kind, d.account_id, d.station_id`,
+      [code, hmac(token), Number.isInteger(Number(req.body?.tablet)) && req.body?.tablet !== '' && req.body?.tablet != null ? Number(req.body.tablet) : null]);
+    if (!rows[0]) {
+      pairFailed(ip);
+      return res.status(404).json({ error: 'Код не подошёл или устарел. Получите новый в админке → Экраны.' });
+    }
+    const d = rows[0];
+    await audit(pool, { accountId: d.account_id, actor: 'device', deviceId: d.id, action: 'device_paired', details: { kind: d.kind } });
+    res.json({ token, device: { id: d.id, name: d.name, kind: d.kind, station_id: d.station_id }, kdsUrl: config.publicUrl });
+  });
+
   // ---- KDS screens ------------------------------------------------------------
   const kds = express.Router();
   kds.use(requireDevice);
@@ -211,6 +259,26 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode, e
   });
 
   app.use('/api/kds', kds);
+
+  // ---- Poster register app ------------------------------------------------------
+  const pos = express.Router();
+  pos.use(requireDevice);
+  const ids = (v) => String(v ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  pos.get('/order-status', async (req, res) => {
+    res.json(await orderStatus(req.device.account_id, { ids: ids(req.query.ids), table: req.query.table || null, tablet: req.query.tablet ?? null }));
+  });
+  // The register tells us a check changed (closed, sent): fetch it now instead
+  // of waiting for the webhook or the next poll.
+  pos.post('/event', async (req, res) => {
+    const engine = engines.get(req.device.account_id);
+    const list = ids((req.body?.ids ?? []).join?.(',') ?? req.body?.ids).map(Number).filter((n) => Number.isInteger(n) && n > 0);
+    if (engine) {
+      for (const id of list.slice(0, 20)) engine.enqueue(id);
+      if (!list.length) engine.pollOpen().catch((err) => engine.fail('pos event', err));
+    }
+    res.json({ ok: true, queued: list.length });
+  });
+  app.use('/api/pos', pos);
 
   // ---- Venue admin --------------------------------------------------------------
   // Sign in by Poster account name (or venue id) and password; or via Poster OAuth.
@@ -453,7 +521,7 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode, e
   // -- devices
   admin.get('/devices', async (req, res) => {
     res.json((await query(
-      `SELECT d.id, d.name, d.station_id, s.name AS station_name, d.active, d.created_at, d.last_seen_at
+      `SELECT d.id, d.name, d.kind, d.station_id, s.name AS station_name, d.active, d.created_at, d.last_seen_at, d.poster_tablet_id
        FROM devices d LEFT JOIN stations s ON s.id = d.station_id WHERE d.account_id = $1 ORDER BY d.id`, [A(req)])).rows);
   });
   const ownStation = async (accountId, stationId) => {
@@ -462,14 +530,29 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode, e
     if (!s) throw new ActionError('Станция не найдена', 404);
     return s.id;
   };
+  // A new screen or register gets both a link (with a token) and a 6-digit
+  // code valid for 15 minutes: open the link on the device, or type the code.
   admin.post('/devices', async (req, res) => {
     const token = newToken();
-    const name = String(req.body?.name ?? '').trim() || 'Экран';
+    const kind = req.body?.kind === 'pos' ? 'pos' : 'screen';
+    const name = String(req.body?.name ?? '').trim() || (kind === 'pos' ? 'Касса Poster' : 'Экран');
     const stationId = await ownStation(A(req), req.body?.station_id);
+    const code = newPairCode();
     const { rows } = await query(
-      'INSERT INTO devices (account_id, name, station_id, token_hash) VALUES ($1,$2,$3,$4) RETURNING id, name',
-      [A(req), name, stationId, hmac(token)]);
-    res.json({ ...rows[0], token });
+      `INSERT INTO devices (account_id, name, station_id, token_hash, kind, pair_code, pair_exp)
+       VALUES ($1,$2,$3,$4,$5,$6, now() + interval '15 minutes') RETURNING id, name, kind`,
+      [A(req), name, stationId, hmac(token), kind, code]);
+    res.json({ ...rows[0], token, pair_code: code });
+  });
+  // New code for an existing device (a replaced tablet). Pairing with it
+  // issues a new token, so the old tablet is disconnected.
+  admin.post('/devices/:id/code', async (req, res) => {
+    const code = newPairCode();
+    const { rowCount } = await query(
+      `UPDATE devices SET pair_code = $3, pair_exp = now() + interval '15 minutes' WHERE id = $1 AND account_id = $2 AND active`,
+      [Number(req.params.id), A(req), code]);
+    if (!rowCount) throw new ActionError('Экран не найден', 404);
+    res.json({ pair_code: code });
   });
   admin.patch('/devices/:id', async (req, res) => {
     const stationId = await ownStation(A(req), req.body?.station_id);

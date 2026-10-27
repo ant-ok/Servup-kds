@@ -331,31 +331,57 @@ views.devices = async () => {
   const list = await api('/devices');
   const view = $('view');
   view.innerHTML = '';
-  const c = card('Экраны KDS', '<button class="small" id="addDev">+ Подключить экран</button>');
+  const c = card('Экраны и кассы', '<button class="small" id="addDev">+ Экран</button> <button class="light small" id="addPos">+ Касса Poster</button>');
   const stOptions = (sel) => `<option value="">Все станции</option>${stationsCache.map((st) =>
     `<option value="${st.id}" ${st.id === sel ? 'selected' : ''}>${esc(st.name)}${st.kind === 'expo' ? ' (раздача)' : ''}</option>`).join('')}`;
-  c.insertAdjacentHTML('beforeend', `<p class="muted">Новый экран будет показывать: <select id="newStation">${stOptions(stationsCache[0]?.id)}</select></p><div id="newDev"></div>`);
+  c.insertAdjacentHTML('beforeend', `<p class="muted"><b>Экран</b> — планшет или ТВ на станции. <b>Касса Poster</b> — кнопка «KDS» прямо в терминале
+    Poster: официант видит готовность заказа, а бармен у кассы может работать с экраном станции, не отходя от неё.
+    Нужно, чтобы приложение KDS было установлено в Poster.</p>
+    <p class="muted">Новое устройство будет показывать: <select id="newStation">${stOptions(stationsCache[0]?.id)}</select></p><div id="newDev"></div>`);
   c.appendChild(table([
     { key: 'name', title: 'Название' },
+    { key: 'kind', title: 'Тип', fmt: (v, r) => (v === 'pos' ? `Касса Poster${r.poster_tablet_id ? ` №${r.poster_tablet_id}` : ''}` : 'Экран') },
     { key: 'station_id', title: 'Показывает', html: (r) => `<select data-dst="${r.id}">${stOptions(r.station_id)}</select>` },
     { key: 'last_seen_at', title: 'Последняя связь', fmt: dt },
-    { key: 'active', title: '', html: (r) => (r.active ? `<button class="danger small" data-off="${r.id}">Отключить</button>` : '<span class="pill">отключён</span>') },
+    { key: 'active', title: '', html: (r) => (r.active
+      ? `<button class="light small" data-code="${r.id}">Новый код</button> <button class="danger small" data-off="${r.id}">Отключить</button>`
+      : '<span class="pill">отключён</span>') },
   ], list));
   view.appendChild(c);
-  c.querySelector('#addDev').onclick = run(async () => {
-    const name = prompt('Название экрана', `${stationsCache[0]?.name ?? 'Экран'} — планшет`);
+
+  const showCode = (d, kind) => {
+    const link = d.token ? `${location.origin}/kds/#pair=${d.token}` : null;
+    c.querySelector('#newDev').innerHTML = `<div class="card">
+      <p>Код подключения (действует 15 минут, один раз):</p>
+      <p style="font-size:40px;letter-spacing:8px;font-weight:700;margin:8px 0">${esc(d.pair_code)}</p>
+      <p class="muted">${kind === 'pos'
+        ? 'В кассе Poster нажмите кнопку «KDS» и введите этот код.'
+        : 'Откройте на устройстве адрес <code>' + esc(location.origin) + '/kds/</code> и введите код.'}</p>
+      ${link ? `<p class="muted">Или откройте на устройстве ссылку (покажется один раз): <code>${esc(link)}</code>
+        <button class="light small" id="copy">Копировать</button></p>` : ''}</div>`;
+    c.querySelector('#copy')?.addEventListener('click', () => navigator.clipboard?.writeText(link).then(() => toast('Скопировано')));
+  };
+  const add = (kind) => run(async () => {
+    const name = prompt(kind === 'pos' ? 'Название кассы' : 'Название экрана',
+      kind === 'pos' ? 'Касса у бара' : `${stationsCache[0]?.name ?? 'Экран'} — планшет`);
     if (!name) return;
-    const d = await api('/devices', { method: 'POST', body: { name, station_id: c.querySelector('#newStation').value || null } });
-    const link = `${location.origin}/kds/#pair=${d.token}`;
-    c.querySelector('#newDev').innerHTML = `<p>Откройте эту ссылку <b>на самом устройстве</b> (один раз, ссылка больше не покажется):</p>
-      <p><code>${esc(link)}</code> <button class="light small" id="copy">Копировать</button></p>`;
-    c.querySelector('#copy').onclick = () => navigator.clipboard?.writeText(link).then(() => toast('Скопировано'));
+    const d = await api('/devices', { method: 'POST', body: { name, kind, station_id: c.querySelector('#newStation').value || null } });
+    showCode(d, kind);
+  });
+  c.querySelector('#addDev').onclick = add('screen');
+  c.querySelector('#addPos').onclick = add('pos');
+  c.querySelectorAll('[data-code]').forEach((b) => {
+    b.onclick = run(async () => {
+      if (!confirm('Выдать новый код? После подключения по нему старое устройство отключится.')) return;
+      const d = await api(`/devices/${b.dataset.code}/code`, { method: 'POST', body: {} });
+      showCode(d, list.find((x) => String(x.id) === b.dataset.code)?.kind);
+    });
   });
   c.querySelectorAll('[data-dst]').forEach((el) => {
     el.onchange = run(async () => { await api(`/devices/${el.dataset.dst}`, { method: 'PATCH', body: { station_id: el.value || null } }); toast('Сохранено'); });
   });
   c.querySelectorAll('[data-off]').forEach((b) => {
-    b.onclick = run(async () => { if (confirm('Отключить экран?')) { await api(`/devices/${b.dataset.off}`, { method: 'DELETE' }); render(); } });
+    b.onclick = run(async () => { if (confirm('Отключить устройство?')) { await api(`/devices/${b.dataset.off}`, { method: 'DELETE' }); render(); } });
   });
 };
 

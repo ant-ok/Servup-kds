@@ -9,8 +9,11 @@ const store = {
 
 // ---- device pairing: admin gives a link /kds/#pair=TOKEN ----------------
 const pair = new URLSearchParams(location.hash.slice(1)).get('pair');
-if (pair) { store.set('kds_device', pair); history.replaceState(null, '', location.pathname); }
+if (pair) { store.set('kds_device', pair); history.replaceState(null, '', location.pathname + location.search); }
 const deviceToken = store.get('kds_device', null);
+// ?embed=1: shown inside the Poster register — no fullscreen, starts at once.
+const EMBED = new URLSearchParams(location.search).has('embed');
+if (EMBED) document.documentElement.classList.add('embed');
 
 const state = {
   tickets: [],
@@ -481,15 +484,33 @@ function tick() {
 setInterval(tick, 1000);
 
 // ---- start-up ------------------------------------------------------------------
+// Not connected yet: type the 6-digit code from the admin panel (Экраны).
 function showUnpaired() {
   $('start').classList.remove('hidden');
-  $('startMsg').innerHTML = 'Экран не подключён.<br>В админке откройте «Экраны», создайте экран и откройте его ссылку на этом устройстве.';
+  $('startMsg').innerHTML = 'Экран не подключён.<br>Введите код из админки (раздел «Экраны»):';
   $('startBtn').classList.add('hidden');
+  $('pairForm').classList.remove('hidden');
+  $('pairCode').focus();
+}
+
+async function pairWithCode(e) {
+  e.preventDefault();
+  $('pairError').textContent = '';
+  try {
+    const res = await fetch('/api/pair', { method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ code: $('pairCode').value }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    store.set('kds_device', data.token);
+    location.reload();
+  } catch (err) {
+    $('pairError').textContent = err.message;
+  }
 }
 
 async function start() {
   try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch { /* no sound */ }
-  document.documentElement.requestFullscreen?.().catch(() => {});
+  if (!EMBED) document.documentElement.requestFullscreen?.().catch(() => {});
   navigator.wakeLock?.request('screen').catch(() => {});
   $('start').classList.add('hidden');
   state.started = true;
@@ -534,5 +555,7 @@ $('recipeClose').onclick = () => $('recipe').classList.add('hidden');
 $('recipe').onclick = (e) => { if (e.target.id === 'recipe') $('recipe').classList.add('hidden'); };
 $('addStaff').onclick = () => askPin();
 $('startBtn').onclick = start;
+$('pairForm').onsubmit = pairWithCode;
 if (!deviceToken) showUnpaired();
+else if (EMBED) start();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
