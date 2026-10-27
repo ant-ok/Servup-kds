@@ -5,10 +5,13 @@
 import crypto from 'node:crypto';
 import { config } from '../config.js';
 import { audit } from '../db.js';
+import { modifierName } from '../poster/normalize.js';
 
-const hashProducts = (t) =>
+// The "send to workshop" count only matters in that release mode; elsewhere it
+// is left out so a check fetched with and without history hashes the same.
+const hashProducts = (t, withSent) =>
   crypto.createHash('sha1')
-    .update(JSON.stringify([t.status, t.products.map((p) => [p.key, p.num]).sort()]))
+    .update(JSON.stringify([t.status, withSent ? t.sentCount ?? null : null, t.products.map((p) => [p.key, p.num]).sort()]))
     .digest('hex');
 
 const norm = (s) => String(s ?? '').trim().toLowerCase();
@@ -58,7 +61,7 @@ export function desiredUnits(t, { catalog, stationFor, includeUnknown }) {
       productId: line.productId,
       stationId,
       name: product?.name ?? line.name ?? `Товар #${line.productId}`,
-      modifiers: line.modKey === '0' ? null : (product?.modifications?.[line.modKey] ?? line.modName ?? null),
+      modifiers: modifierName(product, line.modKey, line.modName),
       qtys: [],
     };
     // Whole portions become separate units; a weighed amount (0.05 l) is one unit.
@@ -72,28 +75,29 @@ export function desiredUnits(t, { catalog, stationFor, includeUnknown }) {
 const CANCEL_PRIORITY = { new: 0, taken: 1, ready: 2 };
 
 export async function reconcileTransaction(client, accountId, t, opts) {
-  const { catalog, stationFor, settings, now = new Date(), createUnits = true, includeUnknown = false, force = false } = opts;
+  const { catalog, stationFor, settings, now = new Date(), createUnits = true, includeUnknown = false, force = false,
+    historyFallback = false } = opts;
   await client.query('SELECT pg_advisory_xact_lock($1, $2)', [accountId, t.id % 2147483647]);
 
-  const hash = hashProducts(t);
+  const hash = hashProducts(t, settings.release_mode === 'on_send');
   const prev = (await client.query(
-    'SELECT id, status, products_hash FROM transactions WHERE account_id = $1 AND poster_transaction_id = $2', [accountId, t.id],
+    'SELECT id, status, products_hash, released_sent FROM transactions WHERE account_id = $1 AND poster_transaction_id = $2', [accountId, t.id],
   )).rows[0];
 
   const txId = (await client.query(
     `INSERT INTO transactions (account_id, poster_transaction_id, status, table_name, hall_name, waiter_poster_id, waiter_name,
-       spot_id, tablet_id, guests, comment, opened_at, closed_at, sum_total, payed_sum, products_hash, raw, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17, now())
+       spot_id, tablet_id, guests, comment, opened_at, closed_at, sum_total, payed_sum, products_hash, raw, sent_count, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18, now())
      ON CONFLICT (account_id, poster_transaction_id) DO UPDATE SET
        status=EXCLUDED.status, table_name=EXCLUDED.table_name, hall_name=COALESCE(EXCLUDED.hall_name, transactions.hall_name),
        waiter_poster_id=EXCLUDED.waiter_poster_id, waiter_name=EXCLUDED.waiter_name, spot_id=EXCLUDED.spot_id,
-       tablet_id=EXCLUDED.tablet_id, guests=EXCLUDED.guests, comment=EXCLUDED.comment,
+       tablet_id=COALESCE(EXCLUDED.tablet_id, transactions.tablet_id), sent_count=COALESCE(EXCLUDED.sent_count, transactions.sent_count), guests=EXCLUDED.guests, comment=EXCLUDED.comment,
        opened_at=COALESCE(EXCLUDED.opened_at, transactions.opened_at), closed_at=EXCLUDED.closed_at,
        sum_total=EXCLUDED.sum_total, payed_sum=EXCLUDED.payed_sum, products_hash=EXCLUDED.products_hash,
        raw=EXCLUDED.raw, updated_at=now()
      RETURNING id`,
     [accountId, t.id, t.status, t.tableName, t.hallName, t.waiterId, t.waiterName, t.spotId, t.tabletId, t.guests,
-     t.comment, t.openedAt, t.closedAt, t.sum, t.payedSum, hash, t.raw],
+     t.comment, t.openedAt, t.closedAt, t.sum, t.payedSum, hash, t.raw, t.sentCount],
   )).rows[0].id;
 
   if (t.waiterId) {
@@ -121,7 +125,20 @@ export async function reconcileTransaction(client, accountId, t, opts) {
   const startedAt = settings.kds_started_at ? new Date(settings.kds_started_at) : null;
   const tooOld = (t.openedAt && t.openedAt < new Date(now - config.sync.maxAgeHours * 3600e3))
     || (t.status === 2 && !prev && startedAt && t.closedAt && t.closedAt < startedAt);
-  const mayCreate = createUnits && !tooOld;
+  // Release mode "on_send": portions reach the screens only after the waiter
+  // presses "send to workshop" in Poster, or once the check is paid (quick
+  // service, where nobody presses it). Without history we can't tell: the
+  // engine re-fetches the check with history, and as a last resort releases.
+  let released = true;
+  if (settings.release_mode === 'on_send' && t.status !== 2) {
+    if (t.sentCount === null || t.sentCount === undefined) {
+      released = historyFallback;
+      if (!historyFallback) result.needsHistory = true;
+    } else {
+      released = t.sentCount > (prev?.released_sent ?? 0);
+    }
+  }
+  const mayCreate = createUnits && !tooOld && released;
 
   const toCreate = [];
   const toCancel = [];
@@ -154,6 +171,7 @@ export async function reconcileTransaction(client, accountId, t, opts) {
         [accountId, ticketId, txId, u.stationId, u.key, u.productId, u.name, u.modifiers, u.qty, now],
       );
     }
+    if (t.sentCount != null) await client.query('UPDATE transactions SET released_sent = $2 WHERE id = $1', [txId, t.sentCount]);
     await audit(client, { accountId, actor: 'poster', action: round === 1 ? 'order_received' : 'order_added', transactionId: t.id,
       details: { ticketId, round, items: toCreate.map((u) => u.name) } });
     result.created = toCreate.length;

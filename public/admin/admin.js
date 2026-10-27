@@ -368,6 +368,9 @@ views.settings = async () => {
   c.insertAdjacentHTML('beforeend', `
     <div class="kv">
       <span>Название заведения</span><input id="accName" value="${esc(acc.name)}">
+      <span>Когда заказ появляется на экране</span><select id="release">
+        <option value="on_add" ${st.release_mode !== 'on_send' ? 'selected' : ''}>Сразу, как пробили в чек</option>
+        <option value="on_send" ${st.release_mode === 'on_send' ? 'selected' : ''}>После «Отправить в цех» в Poster (или оплаты)</option></select>
       <span>Как экран называет сотрудников</span><input id="maker" value="${esc(st.maker_title ?? 'Сотрудник')}" placeholder="Бармен / Повар / Сотрудник">
       <span>Жёлтый через, мин</span><input type="number" id="warn" value="${st.warn_minutes}">
       <span>Красный через, мин</span><input type="number" id="crit" value="${st.critical_minutes}">
@@ -385,6 +388,7 @@ views.settings = async () => {
       warn_minutes: Number(c.querySelector('#warn').value), critical_minutes: Number(c.querySelector('#crit').value),
       ready_visible_seconds: Number(c.querySelector('#vis').value), day_start_hour: Number(c.querySelector('#dsh').value),
       credit_made_then_removed: c.querySelector('#credit').checked, maker_title: c.querySelector('#maker').value.trim() || 'Сотрудник',
+      release_mode: c.querySelector('#release').value,
     } });
     const pwd = c.querySelector('#pwd').value;
     await api('/account', { method: 'PATCH', body: { name: c.querySelector('#accName').value.trim(), ...(pwd ? { password: pwd } : {}) } });

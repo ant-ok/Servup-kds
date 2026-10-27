@@ -4,7 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { config } from './config.js';
-import { query, tx, audit, getSettings } from './db.js';
+import { pool, query, tx, audit, getSettings } from './db.js';
 import {
   requireAdmin, requireDevice, requirePlatform, signSession, setSessionCookie, platformLogin, verifyPassword,
   hashPassword, pinAttemptAllowed, pinFailed, pinLookup, newToken, hmac, oauthState, checkOauthState,
@@ -15,8 +15,8 @@ import { getSummary, getRecipe, suggestNorms } from './kitchen.js';
 import { createLinkCode } from './alerts.js';
 import { createAccount, DEFAULT_SETTINGS } from './accounts.js';
 import { stationResolver } from './sync/reconcile.js';
-import { verifyWebhook, classifyWebhook } from './poster/webhook.js';
-import { exchangeOAuthCode } from './poster/client.js';
+import { verifyWebhook, classifyWebhook, webhookData } from './poster/webhook.js';
+import { exchangeOAuthCode, exchangeManageCode } from './poster/client.js';
 
 const publicDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'public');
 
@@ -31,7 +31,7 @@ const CLIENT_VERSION = (() => {
 })();
 const PRESETS = ['bar', 'restaurant'];
 
-export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode, telegram = null }) {
+export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode, exchangeManage = exchangeManageCode, telegram = null }) {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json({ limit: '1mb' }));
@@ -53,17 +53,33 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode, t
   app.post('/webhooks/poster', async (req, res) => {
     const body = req.body ?? {};
     const verified = verifyWebhook(body);
-    const acc = body.account
-      ? (await query('SELECT id FROM accounts WHERE poster_account = $1 AND active', [String(body.account)])).rows[0]
+    const acc = body.account || body.account_number
+      ? (await query(
+        `SELECT id FROM accounts WHERE active AND (poster_account = $1 OR poster_account_number = $2)
+         ORDER BY (poster_account = $1) DESC LIMIT 1`,
+        [String(body.account ?? ''), String(body.account_number ?? '')])).rows[0]
       : null;
     await query('INSERT INTO webhook_log (account_id, payload, verified, error) VALUES ($1, $2, $3, $4)',
       [acc?.id ?? null, body, verified, acc ? null : 'unknown account']).catch(() => {});
     // Answer immediately; the payload is only a hint, data is always re-fetched from the API.
     res.json({ ok: true });
+    const what = classifyWebhook(body);
+    // A new token or an uninstall changes access, so it is accepted only signed.
+    if (acc && what.kind === 'application' && verified) {
+      const data = webhookData(body);
+      if (what.action === 'removed') {
+        await query('UPDATE accounts SET poster_token = NULL, updated_at = now() WHERE id = $1', [acc.id]);
+        await audit(pool, { accountId: acc.id, actor: 'poster', action: 'application_removed' });
+      } else if (data.access_token) {
+        await query('UPDATE accounts SET poster_token = $2, updated_at = now() WHERE id = $1', [acc.id, data.access_token]);
+        await audit(pool, { accountId: acc.id, actor: 'poster', action: 'token_updated' });
+      }
+      await engines.restart(acc.id);
+      return;
+    }
     const engine = acc && engines.get(acc.id);
     if (!engine || (!verified && config.poster.webhookStrict)) return;
     engine.health.lastWebhookAt = new Date().toISOString();
-    const what = classifyWebhook(body);
     if (what.kind === 'transaction' && what.id) engine.enqueue(what.id);
     if (what.kind === 'catalog') engine.syncCatalog().catch((err) => engine.fail('catalog', err));
   });
@@ -91,17 +107,46 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode, t
       console.error('[oauth]', err.message);
       return res.status(502).send(`Poster не выдал доступ: ${err.message}`);
     }
-    const posterAccount = String(data.account ?? account);
-    let acc = (await query('SELECT id FROM accounts WHERE poster_account = $1', [posterAccount])).rows[0];
-    if (acc) {
-      await query('UPDATE accounts SET poster_token = $2, active = true, updated_at = now() WHERE id = $1', [acc.id, data.access_token]);
-    } else {
-      acc = await createAccount({ name: data.ownerInfo?.company_name || posterAccount, posterAccount, token: data.access_token, preset });
-    }
+    const acc = await upsertPosterAccount({ posterAccount: String(data.account ?? account), data, preset });
     await engines.restart(acc.id);
     setSessionCookie(res, 'admin', signSession('admin', acc.id));
     res.redirect('/admin/');
   });
+
+  // Opened from inside the Poster admin panel (Poster Platform application):
+  // Poster passes a `code`, the exchange returns the token and account number.
+  app.get('/auth/poster/manage', async (req, res) => {
+    if (!config.poster.appId || !req.query.code) return res.status(400).send('Нет кода от Poster');
+    let data;
+    try {
+      data = await exchangeManage({ code: String(req.query.code) });
+    } catch (err) {
+      console.error('[manage]', err.message);
+      return res.status(502).send(`Poster не выдал доступ: ${err.message}`);
+    }
+    const acc = await upsertPosterAccount({ posterAccount: req.query.account ? String(req.query.account) : null, data, preset: 'bar' });
+    await engines.restart(acc.id);
+    setSessionCookie(res, 'admin', signSession('admin', acc.id));
+    res.redirect('/admin/');
+  });
+
+  async function upsertPosterAccount({ posterAccount, data, preset }) {
+    const number = data.account_number != null ? String(data.account_number) : null;
+    let acc = (await query(
+      'SELECT id FROM accounts WHERE ($1::text IS NOT NULL AND poster_account = $1) OR ($2::text IS NOT NULL AND poster_account_number = $2) LIMIT 1',
+      [posterAccount, number])).rows[0];
+    if (acc) {
+      await query(
+        `UPDATE accounts SET poster_token = $2, active = true, poster_account = COALESCE(poster_account, $3),
+           poster_account_number = COALESCE(poster_account_number, $4), updated_at = now() WHERE id = $1`,
+        [acc.id, data.access_token, posterAccount, number]);
+    } else {
+      acc = await createAccount({ name: data.ownerInfo?.company_name || posterAccount || `Poster ${number}`, posterAccount,
+        token: data.access_token, preset });
+      if (number) await query('UPDATE accounts SET poster_account_number = $2 WHERE id = $1', [acc.id, number]);
+    }
+    return acc;
+  }
 
   // ---- KDS screens ------------------------------------------------------------
   const kds = express.Router();
@@ -222,7 +267,8 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode, t
     res.json({ ok: true });
   });
 
-  const EDITABLE = ['credit_made_then_removed', 'warn_minutes', 'critical_minutes', 'ready_visible_seconds', 'day_start_hour', 'maker_title'];
+  const EDITABLE = ['credit_made_then_removed', 'warn_minutes', 'critical_minutes', 'ready_visible_seconds', 'day_start_hour', 'maker_title',
+    'release_mode'];
   admin.get('/settings', async (req, res) => res.json(await getSettings(A(req))));
   admin.put('/settings', async (req, res) => {
     await tx(async (c) => {

@@ -45,14 +45,15 @@ export async function getRecipe(accountId, productId, engine) {
   if (engine) await engine.ensureRecipes([productId]);
   const row = (await query(
     `SELECT p.poster_product_id AS id, p.name, p.category_name, p.recipe, p.photo, a.poster_account,
-            i.norm_seconds, i.recipe_note
+            COALESCE(i.norm_seconds, p.cooking_seconds) AS norm_seconds, i.recipe_note, p.description
      FROM products p JOIN accounts a ON a.id = p.account_id
      LEFT JOIN product_info i ON i.account_id = p.account_id AND i.poster_product_id = p.poster_product_id
      WHERE p.account_id = $1 AND p.poster_product_id = $2`, [accountId, productId])).rows[0];
   if (!row) return null;
   return {
     id: row.id, name: row.name, category: row.category_name, ingredients: row.recipe ?? [],
-    note: row.recipe_note, normSeconds: row.norm_seconds, photo: photoUrl(row.photo, row.poster_account),
+    note: row.recipe_note, description: row.description, normSeconds: row.norm_seconds,
+    photo: photoUrl(row.photo, row.poster_account),
   };
 }
 

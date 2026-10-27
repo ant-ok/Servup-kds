@@ -162,9 +162,10 @@ async function unitsFor(ticketIds, stationId) {
     `SELECT u.id, u.ticket_id, u.station_id, s.name AS station_name, u.item_key, u.name, u.modifiers, u.qty, u.status,
             u.created_at, u.taken_at, u.ready_at, u.cancelled_at, u.cancel_ack, u.made_then_removed,
             u.taken_by, tb.name AS taken_by_name, u.ready_by, rb.name AS ready_by_name,
-            u.poster_product_id AS product_id, pi.norm_seconds
+            u.poster_product_id AS product_id, COALESCE(pi.norm_seconds, pr.cooking_seconds) AS norm_seconds
      FROM units u LEFT JOIN stations s ON s.id = u.station_id
      LEFT JOIN product_info pi ON pi.account_id = u.account_id AND pi.poster_product_id = u.poster_product_id
+     LEFT JOIN products pr ON pr.account_id = u.account_id AND pr.poster_product_id = u.poster_product_id
      LEFT JOIN employees tb ON tb.id = u.taken_by LEFT JOIN employees rb ON rb.id = u.ready_by
      WHERE u.ticket_id = ANY($1) AND ($2::int IS NULL OR u.station_id = $2) ORDER BY u.id`,
     [ticketIds, stationId])).rows;

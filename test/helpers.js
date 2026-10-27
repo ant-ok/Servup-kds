@@ -1,6 +1,7 @@
 // Tests run against a throwaway database (kds_test by default).
 process.env.DATABASE_URL ??= 'postgres://kds:kds@localhost:5432/kds_test';
 process.env.APP_SECRET ??= 'test-secret';
+process.env.POSTER_APP_SECRET ??= 'poster-secret';
 
 const db = await import('../src/db.js');
 const { SyncEngine } = await import('../src/sync/engine.js');

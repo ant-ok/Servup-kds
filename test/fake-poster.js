@@ -26,6 +26,8 @@ export class FakePoster {
       { user_id: '2', name: 'Олег (кассир)', role_name: 'Кассир' },
     ];
     this.transactions = new Map();
+    this.listHistory = true; // whether dash.getTransactions includes history
+    this.settings = { timezones: 'Europe/Moscow' };
     this.nextId = 1000;
   }
 
@@ -34,11 +36,17 @@ export class FakePoster {
     const id = String(this.nextId++);
     const emp = this.employees.find((e) => Number(e.user_id) === waiter);
     this.transactions.set(id, {
+      // Like the real API: no register on the check itself, only in its history.
       transaction_id: id, status: '1', table_name: table, user_id: String(waiter), name: emp?.name ?? '',
-      spot_id: '1', spot_tablet_id: String(tablet), guests_count: '2', transaction_comment: comment,
+      spot_id: '1', guests_count: '2', transaction_comment: comment,
       date_start: String(openedAt), date_close: '0', sum: '0', payed_sum: '0', products: [],
+      history: [{ history_id: '1', type_history: 'open', spot_tablet_id: String(tablet), time: String(openedAt) }],
     });
     return Number(id);
+  }
+  sendToKitchen(id) {
+    const t = this.transactions.get(String(id));
+    t.history.push({ history_id: String(t.history.length + 1), type_history: 'sendtokitchen', spot_tablet_id: '1', time: String(Date.now()) });
   }
   add(id, productId, num = 1, modificationId = '0') {
     const t = this.transactions.get(String(id));
@@ -73,8 +81,11 @@ export class FakePoster {
   // --- adapter interface used by SyncEngine ---
   clone = (v) => JSON.parse(JSON.stringify(v));
   async getTransactions({ status = 0 }) {
-    return this.clone([...this.transactions.values()].filter((t) => !status || Number(t.status) === status));
+    const list = this.clone([...this.transactions.values()].filter((t) => !status || Number(t.status) === status));
+    if (!this.listHistory) list.forEach((t) => delete t.history);
+    return list;
   }
+  async getSettings() { return this.clone(this.settings); }
   async getTransaction(id) { return this.clone(this.transactions.get(String(id)) ?? null); }
   async getProducts() { return this.clone(this.products.map(({ ingredients, ...p }) => p)); }
   async getProduct(id) {

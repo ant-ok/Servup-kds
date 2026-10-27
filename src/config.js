@@ -32,6 +32,7 @@ export const config = {
     oauthAuthorizeUrl: env('POSTER_OAUTH_AUTHORIZE_URL', 'https://joinposter.com/api/auth'),
     // {account} is replaced with the venue's Poster subdomain.
     oauthTokenUrl: env('POSTER_OAUTH_TOKEN_URL', 'https://{account}.joinposter.com/api/v2/auth/access_token'),
+    manageAuthUrl: env('POSTER_MANAGE_AUTH_URL', 'https://joinposter.com/api/v2/auth/manage'),
     // Optional single-venue bootstrap: creates the first account from these on start.
     bootstrapToken: env('POSTER_TOKEN', ''),
     bootstrapAccount: env('POSTER_ACCOUNT', ''),

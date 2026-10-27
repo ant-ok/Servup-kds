@@ -336,3 +336,78 @@ test('nightly resync runs once at the start of the business day and fixes drift'
   assert.deepEqual(rows[0], { status: 2, payed_sum: 1000 });
   assert.equal(await v.engine.maybeNightlyResync(at(6)), false, 'only once a day');
 });
+
+// ---- details from the Poster API typings -----------------------------------
+
+const setSetting = (key, value) => db.query(
+  `INSERT INTO settings (account_id, key, value) VALUES ($1, $2, $3)
+   ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value`, [v.accountId, key, JSON.stringify(value)]);
+
+test('"send to workshop" mode: portions appear only after the waiter sends them (or pays)', async () => {
+  await setSetting('release_mode', 'on_send');
+  const id = v.fake.open();
+  v.fake.add(id, 10, 2);
+  await poll();
+  assert.equal((await unitsOf(v, id)).length, 0, 'on the check but not sent yet');
+
+  v.fake.sendToKitchen(id);
+  await poll();
+  assert.equal((await unitsOf(v, id)).length, 2);
+
+  v.fake.add(id, 11, 1);
+  await poll();
+  assert.equal((await unitsOf(v, id)).length, 2, 'the addition waits for the next send');
+  v.fake.sendToKitchen(id);
+  await poll();
+  assert.equal((await unitsOf(v, id)).length, 3);
+
+  const q = v.fake.open();
+  v.fake.add(q, 13, 1);
+  v.fake.close(q); // quick service: paid, never "sent"
+  await v.engine.pollFull();
+  assert.equal((await unitsOf(v, q)).length, 1);
+});
+
+test('"send to workshop" mode works when the list comes without history', async () => {
+  await setSetting('release_mode', 'on_send');
+  v.fake.listHistory = false;
+  const id = v.fake.open();
+  v.fake.add(id, 10, 1);
+  await poll();
+  await v.engine.idle();
+  assert.equal((await unitsOf(v, id)).length, 0);
+  v.fake.sendToKitchen(id);
+  await poll();
+  await v.engine.idle();
+  assert.equal((await unitsOf(v, id)).length, 1, 'fetched alone, with history');
+});
+
+test('the cash register comes from the check history', async () => {
+  const id = v.fake.open({ tablet: 2 });
+  v.fake.add(id, 10, 1);
+  await poll();
+  assert.equal((await board(v.device))[0].tablet_id, 2);
+});
+
+test('dish modifiers sent as [{m, a}] get their names', async () => {
+  v.fake.products.push({ product_id: '40', product_name: 'Паста', workshop: '1',
+    group_modifications: [{ dish_modification_group_id: 1, name: 'Добавки', modifications: [
+      { dish_modification_id: 5, name: 'Пармезан' }, { dish_modification_id: 6, name: 'Бекон' }] }] });
+  await v.engine.syncCatalog();
+  const id = v.fake.open();
+  v.fake.add(id, 40, 1, '[{"m":5,"a":2},{"m":6,"a":1}]');
+  await poll();
+  assert.equal((await unitsOf(v, id))[0].modifiers, 'Пармезан ×2, Бекон');
+});
+
+test('Poster cooking time is the default norm; the venue time zone is stored', async () => {
+  v.fake.products.find((p) => p.product_id === '10').cooking_time = '3'; // minutes
+  v.fake.settings.timezones = 'Asia/Yekaterinburg';
+  await v.engine.syncCatalog();
+  const id = v.fake.open();
+  v.fake.add(id, 10, 1);
+  await poll();
+  assert.equal((await board(v.device))[0].units[0].norm_seconds, 180);
+  const { rows } = await db.query(`SELECT value FROM settings WHERE account_id = $1 AND key = 'timezone'`, [v.accountId]);
+  assert.equal(rows[0].value, 'Asia/Yekaterinburg');
+});

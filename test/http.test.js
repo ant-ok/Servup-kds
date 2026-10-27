@@ -115,3 +115,30 @@ test('a KDS screen only works with its own token', async () => {
   assert.equal(ok.status, 200);
   assert.equal(ok.data.station.name, 'Все станции');
 });
+
+test('application webhook: a signed token update is applied, an unsigned one ignored, uninstall revokes', async () => {
+  const crypto = await import('node:crypto');
+  const p = client();
+  await p('/api/platform/login', { method: 'POST', body: { password: 'platform' } });
+  const acc = (await p('/api/platform/accounts', { method: 'POST', body: { name: 'D', poster_account: 'ddd', token: 'old' } })).data;
+  const sign = (b) => crypto.createHash('md5')
+    .update([b.account, b.object, b.object_id, b.action, b.data, b.time, 'poster-secret'].filter((x) => x !== undefined).join(';')).digest('hex');
+  const hook = (b) => p('/webhooks/poster', { method: 'POST', body: b });
+  const token = async () => (await db.query('SELECT poster_token FROM accounts WHERE id = $1', [acc.id])).rows[0].poster_token;
+  const settle = () => new Promise((r) => setTimeout(r, 150));
+
+  const forged = { account: 'ddd', object: 'application', object_id: 1, action: 'changed', time: '1', data: JSON.stringify({ access_token: 'evil' }), verify: 'x' };
+  await hook(forged);
+  await settle();
+  assert.equal(await token(), 'old');
+
+  const update = { account: 'ddd', object: 'application', object_id: 1, action: 'changed', time: '2', data: JSON.stringify({ access_token: 'new' }) };
+  await hook({ ...update, verify: sign(update) });
+  await settle();
+  assert.equal(await token(), 'new');
+
+  const removed = { account: 'ddd', object: 'application', object_id: 1, action: 'removed', time: '3' };
+  await hook({ ...removed, verify: sign(removed) });
+  await settle();
+  assert.equal(await token(), null);
+});

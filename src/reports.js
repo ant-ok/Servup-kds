@@ -3,6 +3,7 @@
 // Every report takes { accountId, from, to, stationId?, employeeId? }.
 import { config } from './config.js';
 import { query, getSettings } from './db.js';
+import { venueTimeZone } from './sync/engine.js';
 
 async function period({ accountId, from, to }) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(from ?? '') || !/^\d{4}-\d{2}-\d{2}$/.test(to ?? '')) {
@@ -13,7 +14,7 @@ async function period({ accountId, from, to }) {
   const { rows } = await query(
     `SELECT (($1::date + make_interval(hours => $3)) AT TIME ZONE $4) AS a,
             (($2::date + 1 + make_interval(hours => $3)) AT TIME ZONE $4) AS b`,
-    [from, to, h, config.timezone]);
+    [from, to, h, venueTimeZone(s)]);
   return { a: rows[0].a, b: rows[0].b, creditRemoved: s.credit_made_then_removed !== false };
 }
 
@@ -38,7 +39,9 @@ export async function makers(q) {
         round(100.0 * count(*) FILTER (WHERE ${CREDITED} AND u.ready_at - u.taken_at <= make_interval(secs => pi.norm_seconds))
               / NULLIF(count(*) FILTER (WHERE ${CREDITED} AND pi.norm_seconds IS NOT NULL), 0)) AS within_norm_pct
      FROM units u JOIN employees e ON e.id = u.ready_by LEFT JOIN stations s ON s.id = u.station_id
-     LEFT JOIN product_info pi ON pi.account_id = u.account_id AND pi.poster_product_id = u.poster_product_id
+     LEFT JOIN product_info pi0 ON pi0.account_id = u.account_id AND pi0.poster_product_id = u.poster_product_id
+     LEFT JOIN products pr ON pr.account_id = u.account_id AND pr.poster_product_id = u.poster_product_id
+     CROSS JOIN LATERAL (SELECT COALESCE(pi0.norm_seconds, pr.cooking_seconds) AS norm_seconds) pi
      WHERE u.account_id = $1 AND u.ready_at >= $2 AND u.ready_at < $3 AND ($5::int IS NULL OR u.station_id = $5)
      GROUP BY e.id, e.name ORDER BY earned DESC, portions DESC`,
     [q.accountId, p.a, p.b, p.creditRemoved, station(q.stationId)]);
@@ -107,7 +110,9 @@ export async function products(q) {
         round(100.0 * count(*) FILTER (WHERE ${CREDITED} AND u.ready_at - u.taken_at <= make_interval(secs => pi.norm_seconds))
               / NULLIF(count(*) FILTER (WHERE ${CREDITED} AND pi.norm_seconds IS NOT NULL), 0))        AS within_norm_pct
      FROM units u LEFT JOIN stations s ON s.id = u.station_id
-     LEFT JOIN product_info pi ON pi.account_id = u.account_id AND pi.poster_product_id = u.poster_product_id
+     LEFT JOIN product_info pi0 ON pi0.account_id = u.account_id AND pi0.poster_product_id = u.poster_product_id
+     LEFT JOIN products pr ON pr.account_id = u.account_id AND pr.poster_product_id = u.poster_product_id
+     CROSS JOIN LATERAL (SELECT COALESCE(pi0.norm_seconds, pr.cooking_seconds) AS norm_seconds) pi
      WHERE u.account_id = $1 AND u.ready_at >= $2 AND u.ready_at < $3 AND ($5::int IS NULL OR u.station_id = $5)
      GROUP BY 1, 2, 3 ORDER BY portions DESC`, [q.accountId, p.a, p.b, p.creditRemoved, station(q.stationId)]);
   return rows;

@@ -7,8 +7,13 @@ import { EventEmitter } from 'node:events';
 import { config } from '../config.js';
 import { query, tx, getSettings } from '../db.js';
 import { createPosterClient } from '../poster/client.js';
-import { normalizeTransaction, normalizeCatalogProduct, normalizeRecipe } from '../poster/normalize.js';
+import { normalizeTransaction, normalizeCatalogProduct, normalizeRecipe, cookingSeconds } from '../poster/normalize.js';
 import { reconcileTransaction, stationResolver } from './reconcile.js';
+
+export const isTimeZone = (tz) => {
+  try { new Intl.DateTimeFormat('en', { timeZone: tz }); return true; } catch { return false; }
+};
+export const venueTimeZone = (settings) => (settings.timezone && isTimeZone(settings.timezone) ? settings.timezone : config.timezone);
 
 // Syncs one venue.
 export class SyncEngine extends EventEmitter {
@@ -91,25 +96,37 @@ export class SyncEngine extends EventEmitter {
   }
 
   async syncCatalog() {
-    const [products, workshops, employees] = await Promise.all([
+    const [products, workshops, employees, posterSettings] = await Promise.all([
       this.poster.getProducts(),
       this.poster.getWorkshops().catch(() => []),
       this.poster.getEmployees().catch(() => []),
+      this.poster.getSettings?.().catch(() => null) ?? null,
     ]);
+    // The venue's own time zone (settings.getAllSettings → timezones) drives
+    // business days in reports; venues can be in different cities.
+    const tz = posterSettings?.timezones;
+    if (tz && isTimeZone(tz)) {
+      await query(
+        `INSERT INTO settings (account_id, key, value) VALUES ($1, 'timezone', $2)
+         ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
+        [this.accountId, JSON.stringify(tz)]);
+    }
     await tx(async (c) => {
       for (const raw of products) {
         const p = normalizeCatalogProduct(raw);
         if (!p.id) continue;
         await c.query(
           `INSERT INTO products (account_id, poster_product_id, name, category_name, workshop_id, modifications, hidden, photo,
-             recipe, recipe_fetched_at, updated_at)
-           VALUES ($7,$1,$2,$3,$4,$5,$6,$8,$9, CASE WHEN $9::jsonb IS NULL THEN NULL ELSE now() END, now())
+             recipe, recipe_fetched_at, cooking_seconds, description, updated_at)
+           VALUES ($7,$1,$2,$3,$4,$5,$6,$8,$9, CASE WHEN $9::jsonb IS NULL THEN NULL ELSE now() END, $10, $11, now())
            ON CONFLICT (account_id, poster_product_id) DO UPDATE SET name=EXCLUDED.name, category_name=EXCLUDED.category_name,
              workshop_id=EXCLUDED.workshop_id, modifications=EXCLUDED.modifications, hidden=EXCLUDED.hidden, photo=EXCLUDED.photo,
+             cooking_seconds=COALESCE(EXCLUDED.cooking_seconds, products.cooking_seconds),
+             description=COALESCE(EXCLUDED.description, products.description),
              recipe=COALESCE(EXCLUDED.recipe, products.recipe),
              recipe_fetched_at=COALESCE(EXCLUDED.recipe_fetched_at, products.recipe_fetched_at), updated_at=now()`,
           [p.id, p.name, p.category, p.workshopId, p.modifications, p.hidden, this.accountId, p.photo,
-           p.recipe ? JSON.stringify(p.recipe) : null],
+           p.recipe ? JSON.stringify(p.recipe) : null, p.cookingSeconds, p.description],
         );
       }
       for (const w of workshops) {
@@ -145,9 +162,13 @@ export class SyncEngine extends EventEmitter {
     for (const { id } of rows.slice(0, 20)) {
       try {
         const raw = await this.poster.getProduct(id);
-        const recipe = normalizeRecipe(Array.isArray(raw) ? raw[0] : raw);
-        await query('UPDATE products SET recipe = $3, recipe_fetched_at = now() WHERE account_id = $1 AND poster_product_id = $2',
-          [this.accountId, id, JSON.stringify(recipe)]);
+        const p = Array.isArray(raw) ? raw[0] : raw;
+        const recipe = normalizeRecipe(p);
+        await query(
+          `UPDATE products SET recipe = $3, recipe_fetched_at = now(),
+             cooking_seconds = COALESCE($4, cooking_seconds), description = COALESCE($5, description)
+           WHERE account_id = $1 AND poster_product_id = $2`,
+          [this.accountId, id, JSON.stringify(recipe), cookingSeconds(p?.cooking_time), p?.product_production_description || null]);
       } catch (err) {
         this.fail(`recipe ${id}`, err);
       }
@@ -213,7 +234,7 @@ export class SyncEngine extends EventEmitter {
         this.queue.delete(id);
         try {
           const raw = await this.poster.getTransaction(id);
-          if (raw) await this.apply(normalizeTransaction(raw));
+          if (raw) await this.apply(normalizeTransaction(raw), { historyFallback: true });
         } catch (err) {
           this.fail(`transaction ${id}`, err);
           // The pollers will pick it up again; no tight retry loop here.
@@ -224,9 +245,9 @@ export class SyncEngine extends EventEmitter {
     }
   }
 
-  async apply(t, { createUnits = true } = {}) {
+  async apply(t, { createUnits = true, historyFallback = false } = {}) {
     const settings = await getSettings(this.accountId);
-    const opts = { settings, createUnits };
+    const opts = { settings, createUnits, historyFallback };
     const run = (extra) => tx((c) => reconcileTransaction(c, this.accountId, t,
       { ...opts, catalog: this.catalog, stationFor: this.stationFor, ...extra }));
     let res = await run();
@@ -236,6 +257,8 @@ export class SyncEngine extends EventEmitter {
       await this.syncCatalog().catch((err) => this.fail('catalog', err));
       res = await run({ includeUnknown: true, force: true });
     }
+    // "Send to workshop" mode and the list came without history: fetch this check alone.
+    if (res.needsHistory) this.enqueue(t.id);
     if (res.changed) this.emit('changed', { transactionId: t.id, ...res });
     return res;
   }
@@ -245,7 +268,7 @@ export class SyncEngine extends EventEmitter {
   // edited check) is corrected before anyone builds a payroll report.
   async maybeNightlyResync(now = new Date()) {
     const s = await getSettings(this.accountId);
-    const hour = Number(new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hourCycle: 'h23', timeZone: config.timezone }).format(now));
+    const hour = Number(new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hourCycle: 'h23', timeZone: venueTimeZone(s) }).format(now));
     const last = s.nightly_resync_at ? new Date(s.nightly_resync_at) : null;
     if (hour !== Number(s.day_start_hour ?? 6) || (last && now - last < 20 * 3600e3)) return false;
     const checks = await this.backfill(new Date(now - 2 * 24 * 3600e3), now);

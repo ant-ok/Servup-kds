@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { config } from '../config.js';
 
 export class PosterError extends Error {
@@ -31,6 +32,11 @@ export async function call(token, method, params = {}, { retries = 2 } = {}) {
         const e = typeof body.error === 'object' ? body.error : { code: body.error, message: body.message };
         throw new PosterError(e.message || `Poster error ${e.code}`, { method, code: e.code, retryable: false });
       }
+      // `response: false` is Poster's "not found"; `err_code` is an error inside a 200.
+      if (body.response === false) return null;
+      if (body.response?.err_code) {
+        throw new PosterError(`Poster err_code ${body.response.err_code}`, { method, code: body.response.err_code, retryable: false });
+      }
       return body.response;
     } catch (err) {
       const retryable = err.retryable ?? (err.name === 'TimeoutError' || err.name === 'TypeError');
@@ -51,10 +57,11 @@ export function createPosterClient(token) {
   const api = (method, params) => call(token, method, params);
   return {
     async getTransactions({ from, to, status = 0 }) {
-      return listOf(await api('dash.getTransactions', { dateFrom: ymd(from), dateTo: ymd(to), status, include_products: true }));
+      return listOf(await api('dash.getTransactions',
+        { dateFrom: ymd(from), dateTo: ymd(to), status, include_products: true, include_history: true }));
     },
     async getTransaction(id) {
-      const r = await api('dash.getTransaction', { transaction_id: id, include_products: true });
+      const r = await api('dash.getTransaction', { transaction_id: id, include_products: true, include_history: true });
       const t = Array.isArray(r) ? r[0] : r;
       if (t && !Array.isArray(t.products)) {
         t.products = listOf(await api('dash.getTransactionProducts', { transaction_id: id }));
@@ -65,7 +72,22 @@ export function createPosterClient(token) {
     getProduct: async (id) => api('menu.getProduct', { product_id: id }),
     getWorkshops: async () => listOf(await api('menu.getWorkshops')),
     getEmployees: async () => listOf(await api('access.getEmployees')),
+    getSettings: async () => api('settings.getAllSettings'),
   };
+}
+
+// Poster Platform: an application opened from inside the Poster admin panel
+// gets a `code`; verify = md5("application_id:application_secret:code").
+export async function exchangeManageCode({ code }) {
+  const { appId, appSecret } = config.poster;
+  const body = new URLSearchParams({
+    application_id: appId, application_secret: appSecret, code,
+    verify: crypto.createHash('md5').update(`${appId}:${appSecret}:${code}`).digest('hex'),
+  });
+  const res = await fetch(config.poster.manageAuthUrl, { method: 'POST', body, signal: AbortSignal.timeout(config.poster.timeoutMs) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.access_token) throw new PosterError(data.message || `Poster manage auth: HTTP ${res.status}`, { method: 'manage' });
+  return data;
 }
 
 // OAuth: exchange the code Poster sends to our redirect URL for a venue token.

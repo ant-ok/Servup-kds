@@ -326,7 +326,8 @@ async function openRecipe(productId, portions) {
     }).join('');
     $('recipeBody').innerHTML = `
       ${rows ? `<table>${rows}</table>` : '<p class="recipe-meta">В Poster нет техкарты для этой позиции.</p>'}
-      ${r.note ? `<div class="recipe-note">${esc(r.note)}</div>` : ''}
+      ${r.description ? `<p class="recipe-meta">Технология (из Poster)</p><div class="recipe-note">${esc(r.description)}</div>` : ''}
+      ${r.note ? `<p class="recipe-meta">Заметка заведения</p><div class="recipe-note">${esc(r.note)}</div>` : ''}
       ${r.normSeconds ? `<p class="recipe-meta">Норма приготовления: ${fmt(r.normSeconds)}</p>` : ''}`;
     $('recipe').classList.remove('hidden');
   } catch (err) {

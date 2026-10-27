@@ -9,6 +9,7 @@ export const DEFAULT_SETTINGS = {
   ready_visible_seconds: 60,
   day_start_hour: 6,              // business day boundary for reports (venues work past midnight)
   maker_title: 'Сотрудник',       // what the screen calls people: «Бармен», «Повар»...
+  release_mode: 'on_add',         // on_add: as soon as it's on the check; on_send: after "send to workshop" in Poster
 };
 
 // preset 'bar': one bar screen. preset 'restaurant': kitchen + bar + expo pass.
