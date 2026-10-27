@@ -14,8 +14,9 @@ const deviceToken = store.get('kds_device', null);
 
 const state = {
   tickets: [],
+  station: { name: '', kind: 'prep', group_items: false },
   serverOffset: 0,          // server clock - local clock
-  settings: { warnMinutes: 5, criticalMinutes: 10, undoWindowSec: 300 },
+  settings: { warnMinutes: 5, criticalMinutes: 10, undoWindowSec: 300, makerTitle: 'Сотрудник' },
   staff: store.get('kds_staff', []),        // [{ id, name, token }]
   current: store.get('kds_current', null),  // employee id
   queue: store.get('kds_queue', []),        // actions not yet confirmed by the server
@@ -68,10 +69,11 @@ async function loadBoard() {
       const data = await api('/board');
       state.serverOffset = new Date(data.serverTime) - Date.now();
       state.health = data.health;
-      const fresh = data.tickets.filter((t) => !t.bumped_at && !state.seen.has(t.id));
+      const fresh = data.tickets.filter((t) => !t.done && !state.seen.has(t.id));
       if (state.seen.size && fresh.length) beep();
       data.tickets.forEach((t) => state.seen.add(t.id));
       state.tickets = data.tickets;
+      state.station = data.station;
       state.online = true;
       render();
     } catch (err) {
@@ -177,14 +179,15 @@ function confirmBox(text) {
 }
 
 // ---- actions: queued with an op id, applied once even if retried ------------
-function enqueue(action, unitIds, extra = {}) {
+function enqueueOp(path, body) {
   const who = currentStaff();
-  state.queue.push({ op_id: crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`, token: who.token, staffId: who.id,
-    action, unit_ids: unitIds, ...extra });
+  state.queue.push({ path, staffId: who.id,
+    body: { op_id: crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`, token: who.token, ...body } });
   store.set('kds_queue', state.queue);
   render();
   flush();
 }
+const enqueue = (action, unitIds) => enqueueOp('/action', { action, unit_ids: unitIds });
 
 let flushing = false;
 async function flush() {
@@ -194,8 +197,7 @@ async function flush() {
     while (state.queue.length) {
       const op = state.queue[0];
       try {
-        const { staffId, ...body } = op;
-        await api('/action', body);
+        await api(op.path ?? '/action', op.body ?? op);
       } catch (err) {
         if (!err.status || err.status >= 500) { state.online = false; renderStatus(); break; } // network: keep and retry
         if (err.status === 401) dropStaff(op.staffId);
@@ -211,32 +213,45 @@ async function flush() {
 }
 setInterval(() => state.queue.length && flush(), 3000);
 
-const pendingUnits = () => new Set(state.queue.flatMap((q) => q.unit_ids));
+const pendingUnits = () => new Set(state.queue.flatMap((q) => q.body?.unit_ids ?? []));
+const isOpen = (u) => u.status === 'new' || u.status === 'taken';
 
-async function onUnitTap(u) {
+// A row is one portion, or on kitchens with grouping on, several identical
+// portions in the same state ("Бургер ×4"). A tap acts on the whole row.
+async function onRowTap(group) {
+  const u = group[0];
+  const ids = group.map((x) => x.id);
   if (u.status === 'cancelled') return;
   const me = await ensureStaff();
   if (!me) return;
-  if (u.status === 'new') return enqueue('take', [u.id]);
-  if (u.status === 'taken' && u.taken_by === me.id) return enqueue('ready', [u.id]);
+  if (u.status === 'new') return enqueue('take', ids);
+  if (u.status === 'taken' && u.taken_by === me.id) return enqueue('ready', ids);
   if (u.status === 'taken') {
-    if (await confirmBox(`Взял ${u.taken_by_name}. Отметить готовым от имени «${me.name}»?`)) enqueue('ready', [u.id]);
+    if (await confirmBox(`Взял ${u.taken_by_name}. Отметить готовым от имени «${me.name}»?`)) enqueue('ready', ids);
     return;
   }
   if (u.status === 'ready' && u.ready_by === me.id) {
     const age = (Date.now() + state.serverOffset - new Date(u.ready_at)) / 1000;
     if (age > state.settings.undoWindowSec) return toast('Время на отмену вышло — обратитесь к администратору');
-    if (await confirmBox(`Вернуть «${u.name}» в работу?`)) enqueue('undo', [u.id]);
+    if (await confirmBox(`Вернуть «${u.name}» в работу?`)) enqueue('undo', ids);
   }
 }
 
 async function onAllReady(t) {
   const me = await ensureStaff();
   if (!me) return;
-  const ids = t.units.filter((u) => u.status === 'new' || u.status === 'taken').map((u) => u.id);
+  const ids = t.units.filter(isOpen).map((u) => u.id);
   const foreign = t.units.filter((u) => u.status === 'taken' && u.taken_by !== me.id);
   if (foreign.length && !(await confirmBox(`Часть позиций взял ${foreign[0].taken_by_name}. Отметить всё от имени «${me.name}»?`))) return;
   if (ids.length) enqueue('ready', ids);
+}
+
+async function onServe(t) {
+  const me = await ensureStaff();
+  if (!me) return;
+  const waiting = t.units.filter((u) => u.status !== 'ready' && u.status !== 'cancelled');
+  if (waiting.length && !(await confirmBox(`Ещё не готово: ${waiting.map((u) => u.name).join(', ')}. Всё равно отметить «отдано»?`))) return;
+  enqueueOp(`/tickets/${t.id}/serve`, {});
 }
 
 // ---- rendering ------------------------------------------------------------------
@@ -246,55 +261,76 @@ const fmt = (sec) => {
 };
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
+function groupUnits(list) {
+  if (!state.station.group_items) return list.map((u) => [u]);
+  const groups = new Map();
+  for (const u of list) {
+    const k = [u.item_key, u.status, u.taken_by, u.ready_by, u.qty].join('|');
+    groups.set(k, [...(groups.get(k) ?? []), u]);
+  }
+  return [...groups.values()];
+}
+
+function unitRow(group, { expo }) {
+  const u = group[0];
+  const pend = pendingUnits();
+  const li = document.createElement('li');
+  li.className = `unit ${u.status}${u.taken_by === state.current ? ' mine' : ''}${group.some((x) => pend.has(x.id)) ? ' pending' : ''}`;
+  const who = u.status === 'ready' ? `готово: ${u.ready_by_name}` : u.status === 'taken' ? `взял: ${u.taken_by_name}`
+    : u.status === 'cancelled' ? 'ОТМЕНА' : (expo ? 'ждёт' : '');
+  const qty = Number(u.qty) !== 1 ? ` × ${u.qty}` : '';
+  const count = group.length > 1 ? `<span class="count">×${group.length}</span>` : '';
+  const station = expo && u.station_name ? `<span class="station">${esc(u.station_name)}</span>` : '';
+  li.innerHTML = `<span class="box"></span><span class="name">${count}${esc(u.name)}${qty}${u.modifiers ? `<span class="mod">${esc(u.modifiers)}</span>` : ''}</span>${station}<span class="who">${esc(who)}</span>`;
+  if (!expo) li.onclick = () => onRowTap(group);
+  return li;
+}
+
 function render() {
   renderStatus();
+  const expo = state.station.kind === 'expo';
+  $('stationName').textContent = state.station.name;
   const board = $('board');
-  const pend = pendingUnits();
-  const me = state.current;
-  const active = state.tickets.filter((t) => !t.bumped_at);
-  const done = state.tickets.filter((t) => t.bumped_at);
+  const active = state.tickets.filter((t) => !t.done);
+  const done = state.tickets.filter((t) => t.done);
 
   board.innerHTML = '';
   for (const t of active) {
-    const open = t.units.filter((u) => u.status === 'new' || u.status === 'taken');
-    const allCancelled = !open.length && t.units.every((u) => u.status === 'cancelled');
+    const open = t.units.filter(isOpen);
+    const live = t.units.filter((u) => u.status !== 'cancelled');
+    const readyCnt = live.filter((u) => u.status === 'ready').length;
     const card = document.createElement('article');
     card.className = 'ticket';
     card.dataset.created = t.created_at;
-    if (!open.length) card.classList.add('cancelled');
+    if (expo && live.length && readyCnt === live.length) card.classList.add('all-ready');
+    else if (!open.length && !expo) card.classList.add('cancelled');
     card.innerHTML = `
       <div class="t-head">
         <div class="t-row"><span class="table">${t.table_name ? `Стол ${esc(t.table_name)}` : 'Без стола'}${t.round > 1 ? '<span class="badge">ДОЗАКАЗ</span>' : ''}</span>
           <span class="timer"></span></div>
-        <div class="meta">Чек ${t.transaction_id} · ${esc(t.waiter_name || '—')}${t.tablet_id ? ` · касса ${t.tablet_id}` : ''}${t.hall_name ? ` · ${esc(t.hall_name)}` : ''}${t.guests ? ` · гостей ${t.guests}` : ''}${t.check_status === 2 ? ' · оплачен' : ''}</div>
+        <div class="meta">Чек ${t.transaction_id} · ${esc(t.waiter_name || '—')}${t.tablet_id ? ` · касса ${t.tablet_id}` : ''}${t.hall_name ? ` · ${esc(t.hall_name)}` : ''}${t.guests ? ` · гостей ${t.guests}` : ''}${t.check_status === 2 ? ' · оплачен' : ''}${expo ? ` · готово ${readyCnt}/${live.length}` : ''}</div>
       </div>
       ${t.comment ? `<div class="comment">${esc(t.comment)}</div>` : ''}
       <ul class="units"></ul>
       <div class="t-actions"></div>`;
     const ul = card.querySelector('.units');
-    for (const u of t.units) {
-      const li = document.createElement('li');
-      li.className = `unit ${u.status}${u.taken_by === me ? ' mine' : ''}${pend.has(u.id) ? ' pending' : ''}`;
-      const who = u.status === 'ready' ? `готово: ${u.ready_by_name}` : u.status === 'taken' ? `взял: ${u.taken_by_name}`
-        : u.status === 'cancelled' ? 'ОТМЕНА' : '';
-      const qty = Number(u.qty) !== 1 ? ` × ${u.qty}` : '';
-      li.innerHTML = `<span class="box"></span><span class="name">${esc(u.name)}${qty}${u.modifiers ? `<span class="mod">${esc(u.modifiers)}</span>` : ''}</span><span class="who">${esc(who)}</span>`;
-      li.onclick = () => onUnitTap(u);
-      ul.appendChild(li);
-    }
+    for (const g of groupUnits(expo ? live : t.units)) ul.appendChild(unitRow(g, { expo }));
+
     const actions = card.querySelector('.t-actions');
-    if (open.length) {
-      const b = document.createElement('button');
+    const b = document.createElement('button');
+    if (expo) {
+      b.textContent = 'Отдано';
+      b.className = readyCnt === live.length ? '' : 'secondary';
+      b.onclick = () => onServe(t);
+    } else if (open.length) {
       b.textContent = open.length > 1 ? `Всё готово (${open.length})` : 'Готово';
       b.onclick = () => onAllReady(t);
-      actions.appendChild(b);
     } else {
-      const b = document.createElement('button');
       b.className = 'dismiss';
-      b.textContent = allCancelled ? 'Заказ отменён — убрать' : 'Убрать';
+      b.textContent = live.length ? 'Позиции отменены — убрать' : 'Заказ отменён — убрать';
       b.onclick = () => api(`/tickets/${t.id}/dismiss`, {}).then(loadBoard).catch((e) => toast(e.message));
-      actions.appendChild(b);
     }
+    actions.appendChild(b);
     board.appendChild(card);
   }
 
@@ -303,9 +339,16 @@ function render() {
   for (const t of done.slice(-8).reverse()) {
     const d = document.createElement('button');
     d.className = 'done';
-    const names = [...new Set(t.units.filter((u) => u.ready_by_name).map((u) => u.ready_by_name))].join(', ');
+    const names = expo ? (t.served_by_name ?? '')
+      : [...new Set(t.units.filter((u) => u.ready_by_name).map((u) => u.ready_by_name))].join(', ');
     d.innerHTML = `<b>✓</b> ${t.table_name ? `Стол ${esc(t.table_name)}` : `Чек ${t.transaction_id}`} · ${esc(names)}`;
     d.onclick = async () => {
+      if (expo) {
+        if (await ensureStaff() && await confirmBox(`Вернуть заказ «${t.table_name ?? t.transaction_id}» на раздачу?`)) {
+          enqueueOp(`/tickets/${t.id}/serve`, { undo: true });
+        }
+        return;
+      }
       const mine = t.units.filter((u) => u.status === 'ready' && u.ready_by === state.current);
       if (!mine.length) return toast('Здесь нет ваших отметок', 'info');
       if (await confirmBox(`Вернуть заказ «${t.table_name ?? t.transaction_id}» в работу?`)) enqueue('undo', mine.map((u) => u.id));
@@ -343,7 +386,7 @@ setInterval(tick, 1000);
 // ---- start-up ------------------------------------------------------------------
 function showUnpaired() {
   $('start').classList.remove('hidden');
-  $('startMsg').innerHTML = 'Экран не подключён.<br>В админке откройте «Устройства», создайте экран и откройте его ссылку на этом устройстве.';
+  $('startMsg').innerHTML = 'Экран не подключён.<br>В админке откройте «Экраны», создайте экран и откройте его ссылку на этом устройстве.';
   $('startBtn').classList.add('hidden');
 }
 
@@ -355,6 +398,7 @@ async function start() {
   state.started = true;
 
   try { Object.assign(state.settings, (await api('/me')).settings); } catch (err) { if (err.code === 'device') return showUnpaired(); }
+  $('addStaff').textContent = `+ ${state.settings.makerTitle}`;
 
   const socket = io({ auth: { deviceToken }, transports: ['websocket', 'polling'] });
   socket.on('connect', () => { state.online = true; loadBoard(); flush(); });

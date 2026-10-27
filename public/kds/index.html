@@ -5,16 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
   <meta name="theme-color" content="#111418">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <title>Бар KDS</title>
+  <title>KDS</title>
   <link rel="manifest" href="/manifest.json">
   <link rel="icon" href="/icon.svg">
   <link rel="stylesheet" href="kds.css">
 </head>
 <body>
   <header class="top">
+    <div class="station-name" id="stationName"></div>
     <div class="status" id="status"><span class="dot"></span><span id="statusText">Подключение…</span></div>
     <div class="staff" id="staff"></div>
-    <button class="add-staff" id="addStaff">+ Бармен</button>
+    <button class="add-staff" id="addStaff">+ Сотрудник</button>
     <div class="clock" id="clock"></div>
   </header>
 
@@ -26,7 +27,7 @@
 
   <div id="start" class="overlay">
     <div class="panel center">
-      <h1>Бар KDS</h1>
+      <h1>KDS</h1>
       <p id="startMsg">Нажмите, чтобы начать смену</p>
       <button class="big" id="startBtn">Начать</button>
     </div>
@@ -34,7 +35,7 @@
 
   <div id="pinpad" class="overlay hidden">
     <div class="panel pin">
-      <div class="pin-title">Введите PIN бармена</div>
+      <div class="pin-title">Введите свой PIN</div>
       <div class="pin-dots" id="pinDots"></div>
       <div class="pin-grid" id="pinGrid"></div>
       <div class="pin-error" id="pinError"></div>

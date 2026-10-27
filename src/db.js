@@ -41,16 +41,16 @@ export async function migrate() {
   }
 }
 
-export async function getSettings(client = pool) {
-  const { rows } = await client.query('SELECT key, value FROM settings');
+export async function getSettings(accountId, client = pool) {
+  const { rows } = await client.query('SELECT key, value FROM settings WHERE account_id = $1', [accountId]);
   return Object.fromEntries(rows.map((r) => [r.key, r.value]));
 }
 
 export async function audit(client, entry) {
   await client.query(
-    `INSERT INTO audit_log (actor, employee_id, device_id, action, unit_id, transaction_id, details)
-     VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-    [entry.actor, entry.employeeId ?? null, entry.deviceId ?? null, entry.action,
+    `INSERT INTO audit_log (account_id, actor, employee_id, device_id, action, unit_id, transaction_id, details)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+    [entry.accountId, entry.actor, entry.employeeId ?? null, entry.deviceId ?? null, entry.action,
      entry.unitId ?? null, entry.transactionId ?? null, entry.details ?? null],
   );
 }

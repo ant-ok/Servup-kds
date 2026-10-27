@@ -1,7 +1,7 @@
 {
-  "name": "poster-bar-kds",
+  "name": "poster-kds",
   "version": "1.0.0",
-  "description": "KDS для бара с интеграцией Poster и учётом приготовивших",
+  "description": "KDS для баров и ресторанов на Poster: станции, раздача, учёт кто приготовил",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",

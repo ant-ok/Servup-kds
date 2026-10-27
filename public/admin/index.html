@@ -3,26 +3,30 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Бар KDS — админка</title>
+  <title>KDS — админка</title>
   <link rel="icon" href="/icon.svg">
   <link rel="stylesheet" href="admin.css">
 </head>
 <body>
   <div id="login" class="login hidden">
     <form id="loginForm" class="card">
-      <h1>Бар KDS</h1>
+      <h1>KDS для Poster</h1>
+      <a href="/auth/poster/start" id="posterLogin" class="hidden"><button type="button" class="poster">Войти через Poster</button></a>
+      <input id="account" placeholder="Аккаунт Poster (например, mycafe)" autocomplete="username">
       <input type="password" id="password" placeholder="Пароль администратора" autocomplete="current-password">
       <button>Войти</button>
       <div class="error" id="loginError"></div>
+      <p class="muted">Нет аккаунта? <a href="/">Подключить заведение</a></p>
     </form>
   </div>
 
   <div id="app" class="hidden">
     <header>
-      <strong>Бар KDS</strong>
+      <strong id="venueName">KDS</strong>
       <nav id="tabs">
         <button data-tab="reports" class="active">Отчёты</button>
         <button data-tab="anomalies">Контроль</button>
+        <button data-tab="stations">Станции</button>
         <button data-tab="employees">Сотрудники</button>
         <button data-tab="rates">Ставки</button>
         <button data-tab="devices">Экраны</button>

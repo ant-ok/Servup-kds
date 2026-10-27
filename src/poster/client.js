@@ -12,10 +12,10 @@ export class PosterError extends Error {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Thin Poster API client: GET {apiUrl}/{method}?token=...  ->  { response } | { error }
-export async function call(method, params = {}, { retries = 2 } = {}) {
-  if (!config.poster.token) throw new PosterError('POSTER_TOKEN не задан', { method });
+export async function call(token, method, params = {}, { retries = 2 } = {}) {
+  if (!token) throw new PosterError('Нет токена Poster', { method });
   const url = new URL(`${config.poster.apiUrl}/${method}`);
-  url.searchParams.set('token', config.poster.token);
+  url.searchParams.set('token', token);
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null) url.searchParams.set(k, String(v));
   }
@@ -46,27 +46,41 @@ const listOf = (r) => (Array.isArray(r) ? r : Array.isArray(r?.data) ? r.data : 
 
 const ymd = (d) => d.toISOString().slice(0, 10).replace(/-/g, '');
 
-export const poster = {
-  async getTransactions({ from, to, status = 0 }) {
-    const params = { dateFrom: ymd(from), dateTo: ymd(to), status, include_products: true };
-    if (config.poster.spotId) params.spot_id = config.poster.spotId;
-    return listOf(await call('dash.getTransactions', params));
-  },
-  async getTransaction(id) {
-    const r = await call('dash.getTransaction', { transaction_id: id, include_products: true });
-    const t = Array.isArray(r) ? r[0] : r;
-    if (t && !Array.isArray(t.products)) {
-      t.products = listOf(await call('dash.getTransactionProducts', { transaction_id: id }));
-    }
-    return t ?? null;
-  },
-  async getProducts() {
-    return listOf(await call('menu.getProducts'));
-  },
-  async getWorkshops() {
-    return listOf(await call('menu.getWorkshops'));
-  },
-  async getEmployees() {
-    return listOf(await call('access.getEmployees'));
-  },
-};
+// One client per venue, bound to that venue's access token.
+export function createPosterClient(token) {
+  const api = (method, params) => call(token, method, params);
+  return {
+    async getTransactions({ from, to, status = 0 }) {
+      return listOf(await api('dash.getTransactions', { dateFrom: ymd(from), dateTo: ymd(to), status, include_products: true }));
+    },
+    async getTransaction(id) {
+      const r = await api('dash.getTransaction', { transaction_id: id, include_products: true });
+      const t = Array.isArray(r) ? r[0] : r;
+      if (t && !Array.isArray(t.products)) {
+        t.products = listOf(await api('dash.getTransactionProducts', { transaction_id: id }));
+      }
+      return t ?? null;
+    },
+    getProducts: async () => listOf(await api('menu.getProducts')),
+    getWorkshops: async () => listOf(await api('menu.getWorkshops')),
+    getEmployees: async () => listOf(await api('access.getEmployees')),
+  };
+}
+
+// OAuth: exchange the code Poster sends to our redirect URL for a venue token.
+export async function exchangeOAuthCode({ account, code }) {
+  const body = new URLSearchParams({
+    application_id: config.poster.appId,
+    application_secret: config.poster.appSecret,
+    grant_type: 'authorization_code',
+    redirect_uri: `${config.publicUrl}/auth/poster/callback`,
+    code,
+  });
+  const url = config.poster.oauthTokenUrl.replace('{account}', encodeURIComponent(account));
+  const res = await fetch(url, { method: 'POST', body, signal: AbortSignal.timeout(config.poster.timeoutMs) });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.access_token) {
+    throw new PosterError(data.error_message || data.error?.message || `Poster OAuth: HTTP ${res.status}`, { method: 'oauth' });
+  }
+  return data;
+}

@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KDS для Poster</title>
+  <link rel="icon" href="/icon.svg">
+  <link rel="stylesheet" href="/admin/admin.css">
+  <style>
+    .hero { max-width: 880px; margin: 0 auto; padding: 48px 16px 24px; }
+    .hero h1 { font-size: 34px; margin: 0 0 12px; }
+    .hero p { font-size: 18px; color: var(--muted); margin: 0 0 24px; }
+    .cta { display: flex; gap: 10px; flex-wrap: wrap; }
+    .cta a button { padding: 12px 18px; font-size: 16px; }
+    .features { max-width: 880px; margin: 0 auto; padding: 0 16px 48px; display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+    .features .card h3 { margin: 0 0 6px; font-size: 16px; }
+    .features .card p { margin: 0; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <section class="hero">
+    <h1>Экран заказов для кухни и бара на Poster</h1>
+    <p>Заказы со всех касс сразу на экранах станций. Видно, кто взял, кто приготовил и кто отдал. Отчёты для сдельной зарплаты.</p>
+    <div class="cta">
+      <a href="/auth/poster/start?preset=restaurant"><button>Подключить ресторан</button></a>
+      <a href="/auth/poster/start?preset=bar"><button class="light">Подключить бар</button></a>
+      <a href="/admin/"><button class="ghost">Войти</button></a>
+      <a href="/kds/"><button class="ghost">Открыть экран</button></a>
+    </div>
+  </section>
+  <section class="features">
+    <div class="card"><h3>Станции</h3><p>Кухня, бар, горячий и холодный цех, кондитерская. Позиции расходятся по цехам Poster сами.</p></div>
+    <div class="card"><h3>Раздача</h3><p>Видно, что заказ собран со всех станций. Официант отмечает «Отдано».</p></div>
+    <div class="card"><h3>Кто приготовил</h3><p>Каждая порция записывается на того, кто её сделал. Сдельные ставки, выгрузка в Excel.</p></div>
+    <div class="card"><h3>Контроль</h3><p>Видно, что приготовили и потом удалили из чека, что зависло и кто перехватил чужой заказ.</p></div>
+    <div class="card"><h3>Любое устройство</h3><p>Планшет, телефон, ТВ, ПК. Работает в браузере и не теряет нажатия при плохом Wi-Fi.</p></div>
+    <div class="card"><h3>Надёжная связь с Poster</h3><p>Вебхуки плюс постоянная сверка: заказы не теряются и не дублируются.</p></div>
+  </section>
+</body>
+</html>

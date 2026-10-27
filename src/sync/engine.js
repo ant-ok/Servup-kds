@@ -6,15 +6,18 @@
 import { EventEmitter } from 'node:events';
 import { config } from '../config.js';
 import { query, tx, getSettings } from '../db.js';
-import { poster as defaultPoster } from '../poster/client.js';
+import { createPosterClient } from '../poster/client.js';
 import { normalizeTransaction, normalizeCatalogProduct } from '../poster/normalize.js';
-import { reconcileTransaction } from './reconcile.js';
+import { reconcileTransaction, stationResolver } from './reconcile.js';
 
+// Syncs one venue.
 export class SyncEngine extends EventEmitter {
-  constructor({ poster = defaultPoster } = {}) {
+  constructor({ accountId, poster }) {
     super();
+    this.accountId = accountId;
     this.poster = poster;
     this.catalog = new Map();
+    this.stationFor = () => null;
     this.queue = new Set();
     this.working = false;
     this.timers = [];
@@ -23,11 +26,6 @@ export class SyncEngine extends EventEmitter {
 
   async start() {
     await this.loadCatalogFromDb();
-    const s = await getSettings();
-    if (!s.kds_started_at) {
-      await query(`INSERT INTO settings (key, value) VALUES ('kds_started_at', $1) ON CONFLICT DO NOTHING`,
-        [JSON.stringify(new Date().toISOString())]);
-    }
     this.syncCatalog().catch(() => {});
     this.loop('open', config.sync.pollOpenMs, () => this.pollOpen());
     this.loop('full', config.sync.pollFullMs, () => this.pollFull());
@@ -52,7 +50,7 @@ export class SyncEngine extends EventEmitter {
   fail(where, err) {
     this.health.lastError = `${where}: ${err.message}`;
     this.health.lastErrorAt = new Date().toISOString();
-    console.error(`[sync] ${where}:`, err.message);
+    console.error(`[sync ${this.accountId}] ${where}:`, err.message);
     this.emit('health', this.getHealth());
   }
 
@@ -62,10 +60,21 @@ export class SyncEngine extends EventEmitter {
   }
 
   async loadCatalogFromDb() {
-    const { rows } = await query('SELECT * FROM products');
+    const a = this.accountId;
+    const { rows } = await query('SELECT * FROM products WHERE account_id = $1', [a]);
     this.catalog = new Map(rows.map((r) => [r.poster_product_id, {
       id: r.poster_product_id, name: r.name, workshopId: r.workshop_id, modifications: r.modifications,
     }]));
+    await this.loadStations();
+  }
+
+  // Called again whenever stations are edited in the admin panel.
+  async loadStations() {
+    const a = this.accountId;
+    const stations = (await query('SELECT * FROM stations WHERE account_id = $1', [a])).rows;
+    const workshops = new Map((await query('SELECT * FROM workshops WHERE account_id = $1', [a])).rows
+      .map((w) => [w.poster_workshop_id, w.name]));
+    this.stationFor = stationResolver(stations, workshops);
   }
 
   async syncCatalog() {
@@ -79,29 +88,29 @@ export class SyncEngine extends EventEmitter {
         const p = normalizeCatalogProduct(raw);
         if (!p.id) continue;
         await c.query(
-          `INSERT INTO products (poster_product_id, name, category_name, workshop_id, modifications, hidden, updated_at)
-           VALUES ($1,$2,$3,$4,$5,$6, now())
-           ON CONFLICT (poster_product_id) DO UPDATE SET name=EXCLUDED.name, category_name=EXCLUDED.category_name,
+          `INSERT INTO products (account_id, poster_product_id, name, category_name, workshop_id, modifications, hidden, updated_at)
+           VALUES ($7,$1,$2,$3,$4,$5,$6, now())
+           ON CONFLICT (account_id, poster_product_id) DO UPDATE SET name=EXCLUDED.name, category_name=EXCLUDED.category_name,
              workshop_id=EXCLUDED.workshop_id, modifications=EXCLUDED.modifications, hidden=EXCLUDED.hidden, updated_at=now()`,
-          [p.id, p.name, p.category, p.workshopId, p.modifications, p.hidden],
+          [p.id, p.name, p.category, p.workshopId, p.modifications, p.hidden, this.accountId],
         );
       }
       for (const w of workshops) {
         const id = Number(w.workshop_id ?? w.id);
         if (!id) continue;
         await c.query(
-          `INSERT INTO workshops (poster_workshop_id, name) VALUES ($1,$2)
-           ON CONFLICT (poster_workshop_id) DO UPDATE SET name=EXCLUDED.name`,
-          [id, w.workshop_name ?? w.name ?? `Цех ${id}`],
+          `INSERT INTO workshops (account_id, poster_workshop_id, name) VALUES ($3,$1,$2)
+           ON CONFLICT (account_id, poster_workshop_id) DO UPDATE SET name=EXCLUDED.name`,
+          [id, w.workshop_name ?? w.name ?? `Цех ${id}`, this.accountId],
         );
       }
       for (const e of employees) {
         const id = Number(e.user_id ?? e.id);
         if (!id) continue;
         await c.query(
-          `INSERT INTO employees (poster_user_id, name, role_name) VALUES ($1,$2,$3)
-           ON CONFLICT (poster_user_id) DO UPDATE SET name=EXCLUDED.name, role_name=EXCLUDED.role_name, updated_at=now()`,
-          [id, e.name ?? `Сотрудник #${id}`, e.role_name ?? null],
+          `INSERT INTO employees (account_id, poster_user_id, name, role_name) VALUES ($4,$1,$2,$3)
+           ON CONFLICT (account_id, poster_user_id) DO UPDATE SET name=EXCLUDED.name, role_name=EXCLUDED.role_name, updated_at=now()`,
+          [id, e.name ?? `Сотрудник #${id}`, e.role_name ?? null, this.accountId],
         );
       }
     });
@@ -135,7 +144,8 @@ export class SyncEngine extends EventEmitter {
   async recheckMissing(list) {
     const seen = new Set(list.map((t) => Number(t.transaction_id ?? t.id)));
     const { rows } = await query(
-      `SELECT poster_transaction_id AS id FROM transactions WHERE status = 1 AND updated_at > now() - interval '2 days'`);
+      `SELECT poster_transaction_id AS id FROM transactions
+       WHERE account_id = $1 AND status = 1 AND updated_at > now() - interval '2 days'`, [this.accountId]);
     for (const r of rows) if (!seen.has(r.id)) this.enqueue(r.id);
     await this.idle();
   }
@@ -179,14 +189,16 @@ export class SyncEngine extends EventEmitter {
   }
 
   async apply(t, { createUnits = true } = {}) {
-    const settings = await getSettings();
-    let res = await tx((c) => reconcileTransaction(c, t, { catalog: this.catalog, settings, createUnits }));
+    const settings = await getSettings(this.accountId);
+    const opts = { settings, createUnits };
+    const run = (extra) => tx((c) => reconcileTransaction(c, this.accountId, t,
+      { ...opts, catalog: this.catalog, stationFor: this.stationFor, ...extra }));
+    let res = await run();
     if (res.unknown.length) {
       // A product created after the last catalog sync: refresh and decide again.
       // If it's still unknown, show it rather than risk losing an order.
       await this.syncCatalog().catch((err) => this.fail('catalog', err));
-      res = await tx((c) => reconcileTransaction(
-        c, t, { catalog: this.catalog, settings, createUnits, includeUnknown: true, force: true }));
+      res = await run({ includeUnknown: true, force: true });
     }
     if (res.changed) this.emit('changed', { transactionId: t.id, ...res });
     return res;
@@ -205,4 +217,40 @@ export class SyncEngine extends EventEmitter {
     }
     return count;
   }
+}
+
+// All venues of this installation: one SyncEngine per account with a Poster token.
+export class EngineManager extends EventEmitter {
+  constructor({ posterFor = createPosterClient } = {}) {
+    super();
+    this.posterFor = posterFor;
+    this.engines = new Map();
+  }
+
+  async startAll() {
+    const { rows } = await query('SELECT id FROM accounts WHERE active AND poster_token IS NOT NULL');
+    for (const r of rows) await this.restart(r.id);
+  }
+
+  // (Re)start after the account was created, reconnected or re-enabled.
+  async restart(accountId) {
+    this.engines.get(accountId)?.stop();
+    this.engines.delete(accountId);
+    const acc = (await query('SELECT poster_token, active FROM accounts WHERE id = $1', [accountId])).rows[0];
+    if (!acc?.active || !acc.poster_token) return null;
+    const engine = new SyncEngine({ accountId, poster: this.posterFor(acc.poster_token) });
+    engine.on('changed', (e) => this.emit('changed', { accountId, ...e }));
+    engine.on('health', (h) => this.emit('health', { accountId, health: h }));
+    this.engines.set(accountId, engine);
+    await engine.start();
+    return engine;
+  }
+
+  get(accountId) { return this.engines.get(accountId) ?? null; }
+
+  health(accountId) {
+    return this.get(accountId)?.getHealth() ?? { ok: false, lastError: 'Poster не подключён', queue: 0 };
+  }
+
+  stopAll() { for (const e of this.engines.values()) e.stop(); }
 }

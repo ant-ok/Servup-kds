@@ -39,3 +39,5 @@ tfoot td { font-weight: 600; }
 code { background: #eef0f3; padding: 2px 6px; border-radius: 4px; word-break: break-all; }
 label.inline { display: flex; gap: 8px; align-items: center; }
 @media (max-width: 600px) { main { padding: 10px; } header { gap: 8px; } }
+button.poster { width: 100%; background: #f97316; }
+.login .card a button { width: 100%; }

@@ -18,6 +18,7 @@ services:
     restart: always
     env_file: .env
     environment:
+      NODE_ENV: production
       DATABASE_URL: postgres://kds:${DB_PASSWORD:-kds}@db:5432/kds
     ports:
       - "3000:3000"

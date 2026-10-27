@@ -2,44 +2,63 @@ import http from 'node:http';
 import { Server } from 'socket.io';
 import { config } from './config.js';
 import { migrate, query, pool } from './db.js';
-import { hmac } from './auth.js';
+import { deviceByToken } from './auth.js';
 import { createApp } from './app.js';
-import { SyncEngine } from './sync/engine.js';
+import { createAccount } from './accounts.js';
+import { EngineManager } from './sync/engine.js';
 
-if (process.env.NODE_ENV === 'production' && (config.appSecret === 'change-me-please' || config.adminPassword === 'admin')) {
-  console.error('[kds] Задайте APP_SECRET и ADMIN_PASSWORD в .env перед запуском');
+if (process.env.NODE_ENV === 'production' && (config.appSecret === 'change-me-please' || config.platformPassword === 'platform')) {
+  console.error('[kds] Задайте APP_SECRET и PLATFORM_PASSWORD в .env перед запуском');
   process.exit(1);
 }
 
 await migrate();
 
-const engine = new SyncEngine();
+// Single-venue setup straight from .env: the first start creates the account.
+if (config.poster.bootstrapToken) {
+  const { rows } = await query('SELECT id FROM accounts WHERE poster_token = $1 OR ($2 <> \'\' AND poster_account = $2)',
+    [config.poster.bootstrapToken, config.poster.bootstrapAccount]);
+  if (!rows.length) {
+    const acc = await createAccount({
+      name: config.poster.bootstrapAccount || 'Моё заведение', posterAccount: config.poster.bootstrapAccount || null,
+      token: config.poster.bootstrapToken, password: config.poster.bootstrapAdminPassword || null,
+    });
+    console.log(`[kds] создано заведение #${acc.id} из POSTER_TOKEN (вход в админку: «${config.poster.bootstrapAccount || acc.id}»)`);
+  }
+}
+
+const engines = new EngineManager();
 let io;
 
-// Screens are told "something changed" and re-read the board themselves, so a
-// missed push can never leave them showing a partial state.
-let pending = null;
-const notify = () => {
-  if (pending) return;
-  pending = setTimeout(() => {
-    pending = null;
-    io?.emit('board');
-  }, 100);
+// Screens are told "something changed" and re-read their board, so a missed
+// push can never leave them showing a partial state. Batched per venue.
+const pending = new Map();
+const notify = (accountId) => {
+  if (pending.has(accountId)) return;
+  pending.set(accountId, setTimeout(() => {
+    pending.delete(accountId);
+    io?.to(`acc:${accountId}`).emit('board');
+  }, 100));
 };
 
-const app = createApp({ engine, notify });
+const app = createApp({ engines, notify });
 const server = http.createServer(app);
 io = new Server(server, { pingInterval: 10000, pingTimeout: 8000 });
 
 io.use(async (socket, next) => {
-  const token = socket.handshake.auth?.deviceToken;
-  const { rows } = token ? await query('SELECT id FROM devices WHERE token_hash = $1 AND active', [hmac(token)]) : { rows: [] };
-  return rows[0] ? next() : next(new Error('device'));
+  const device = await deviceByToken(socket.handshake.auth?.deviceToken).catch(() => null);
+  if (!device) return next(new Error('device'));
+  socket.data.device = device;
+  next();
 });
-io.on('connection', (socket) => socket.emit('health', engine.getHealth()));
+io.on('connection', (socket) => {
+  const accountId = socket.data.device.account_id;
+  socket.join(`acc:${accountId}`);
+  socket.emit('health', engines.health(accountId));
+});
 
-engine.on('changed', notify);
-engine.on('health', (h) => io.emit('health', h));
+engines.on('changed', (e) => notify(e.accountId));
+engines.on('health', (e) => io.to(`acc:${e.accountId}`).emit('health', e.health));
 
 // Housekeeping: idempotency keys and expired sessions.
 setInterval(() => {
@@ -47,14 +66,13 @@ setInterval(() => {
   query(`DELETE FROM kds_sessions WHERE expires_at < now()`).catch(() => {});
 }, 3600e3);
 
-server.listen(config.port, () => {
-  console.log(`[kds] http://localhost:${config.port}  (экран: /kds/, админка: /admin/)`);
-  if (!config.poster.token) console.warn('[kds] POSTER_TOKEN не задан — синхронизация с Poster не работает');
-  engine.start();
+server.listen(config.port, async () => {
+  console.log(`[kds] ${config.publicUrl}  (экран: /kds/, админка: /admin/, платформа: /platform/)`);
+  await engines.startAll();
 });
 
 const shutdown = async () => {
-  engine.stop();
+  engines.stopAll();
   io.close();
   server.close();
   await pool.end().catch(() => {});

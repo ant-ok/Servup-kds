@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Платформа KDS</title>
+  <link rel="icon" href="/icon.svg">
+  <link rel="stylesheet" href="/admin/admin.css">
+</head>
+<body>
+  <div id="login" class="login hidden">
+    <form id="loginForm" class="card">
+      <h1>Платформа KDS</h1>
+      <input type="password" id="password" placeholder="Пароль владельца платформы">
+      <button>Войти</button>
+      <div class="error" id="loginError"></div>
+    </form>
+  </div>
+  <div id="app" class="hidden">
+    <header><strong>Платформа KDS: все заведения</strong></header>
+    <main>
+      <section class="card">
+        <h2>Добавить заведение вручную</h2>
+        <p class="muted">Обычно заведения подключаются сами через «Подключить через Poster» на главной странице. Вручную — если токен выдан из «Доступ → Интеграция».</p>
+        <form id="createForm" class="toolbar">
+          <input name="name" placeholder="Название" required>
+          <input name="poster_account" placeholder="Аккаунт Poster (поддомен)">
+          <input name="token" placeholder="Токен API Poster">
+          <input name="password" type="password" placeholder="Пароль админки" autocomplete="new-password">
+          <select name="preset"><option value="restaurant">Ресторан: кухня + бар + раздача</option><option value="bar">Бар: один экран</option></select>
+          <button>Создать</button>
+        </form>
+      </section>
+      <section class="card"><h2>Заведения</h2><div id="list"></div></section>
+    </main>
+  </div>
+  <div id="toast" class="toast hidden"></div>
+  <script src="platform.js"></script>
+</body>
+</html>

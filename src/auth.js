@@ -1,9 +1,13 @@
 import crypto from 'node:crypto';
+import { promisify } from 'node:util';
 import { config } from './config.js';
 import { query } from './db.js';
 
+const scrypt = promisify(crypto.scrypt);
+
 export const hmac = (v) => crypto.createHmac('sha256', config.appSecret).update(v).digest('hex');
-export const pinLookup = (pin) => hmac(`pin:${pin}`);
+// PINs are unique per venue, so the same "1111" can exist in two restaurants.
+export const pinLookup = (accountId, pin) => hmac(`pin:${accountId}:${pin}`);
 export const newToken = () => crypto.randomBytes(32).toString('base64url');
 
 const safeEqual = (a, b) => {
@@ -12,41 +16,64 @@ const safeEqual = (a, b) => {
   return x.length === y.length && crypto.timingSafeEqual(x, y);
 };
 
-// --- admin: signed cookie ---------------------------------------------------
-const ADMIN_COOKIE = 'kds_admin';
-
-export function adminLogin(password) {
-  if (!safeEqual(hmac(password ?? ''), hmac(config.adminPassword))) return null;
-  const exp = Date.now() + 12 * 3600e3;
-  return `${exp}.${hmac(`admin.${exp}`)}`;
+export async function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  return `${salt}:${(await scrypt(password, salt, 32)).toString('hex')}`;
+}
+export async function verifyPassword(password, stored) {
+  if (!stored || !password) return false;
+  const [salt, hash] = stored.split(':');
+  return safeEqual((await scrypt(password, salt, 32)).toString('hex'), hash);
 }
 
-function readCookie(req, name) {
-  const m = (req.headers.cookie ?? '').match(new RegExp(`(?:^|;\\s*)${name}=([^;]+)`));
-  return m ? decodeURIComponent(m[1]) : null;
+// --- signed cookies: venue admin and platform owner -------------------------
+const COOKIE = { admin: 'kds_admin', platform: 'kds_platform' };
+const TTL = 12 * 3600e3;
+
+export const signSession = (kind, subject) => {
+  const exp = Date.now() + TTL;
+  return `${subject}.${exp}.${hmac(`${kind}.${subject}.${exp}`)}`;
+};
+function readSession(req, kind) {
+  const m = (req.headers.cookie ?? '').match(new RegExp(`(?:^|;\\s*)${COOKIE[kind]}=([^;]+)`));
+  const [subject, exp, sig] = (m ? decodeURIComponent(m[1]) : '').split('.');
+  if (!subject || !(Number(exp) > Date.now()) || !safeEqual(sig, hmac(`${kind}.${subject}.${exp}`))) return null;
+  return subject;
+}
+export function setSessionCookie(res, kind, value, maxAgeSec = TTL / 1000) {
+  const secure = config.publicUrl.startsWith('https') ? '; Secure' : '';
+  res.append('Set-Cookie', `${COOKIE[kind]}=${value}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAgeSec}${secure}`);
 }
 
-export function setAdminCookie(res, value) {
-  res.setHeader('Set-Cookie', `${ADMIN_COOKIE}=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${12 * 3600}`);
-}
-
-export function requireAdmin(req, res, next) {
-  const [exp, sig] = (readCookie(req, ADMIN_COOKIE) ?? '').split('.');
-  if (exp && Number(exp) > Date.now() && safeEqual(sig, hmac(`admin.${exp}`))) return next();
+export async function requireAdmin(req, res, next) {
+  const id = Number(readSession(req, 'admin'));
+  if (id) {
+    const acc = (await query('SELECT id, name, poster_account, active FROM accounts WHERE id = $1', [id])).rows[0];
+    if (acc?.active) { req.account = acc; return next(); }
+  }
   res.status(401).json({ error: 'Требуется вход администратора' });
 }
 
-// --- KDS devices: a token issued from the admin panel ----------------------
+export function requirePlatform(req, res, next) {
+  if (readSession(req, 'platform') === 'owner') return next();
+  res.status(401).json({ error: 'Требуется вход владельца платформы' });
+}
+export const platformLogin = (password) =>
+  (safeEqual(hmac(password ?? ''), hmac(config.platformPassword)) ? signSession('platform', 'owner') : null);
+
+// --- KDS devices: a token issued from the admin panel; it also names the venue ----
+export async function deviceByToken(token) {
+  if (!token) return null;
+  const { rows } = await query(
+    `UPDATE devices d SET last_seen_at = now() FROM accounts a
+     WHERE d.token_hash = $1 AND d.active AND a.id = d.account_id AND a.active
+     RETURNING d.id, d.name, d.account_id, d.station_id`, [hmac(token)]);
+  return rows[0] ?? null;
+}
+
 export async function requireDevice(req, res, next) {
-  const token = req.get('x-device-token');
-  if (token) {
-    const { rows } = await query(
-      'UPDATE devices SET last_seen_at = now() WHERE token_hash = $1 AND active RETURNING id, name', [hmac(token)]);
-    if (rows[0]) {
-      req.device = rows[0];
-      return next();
-    }
-  }
+  const device = await deviceByToken(req.get('x-device-token'));
+  if (device) { req.device = device; return next(); }
   res.status(401).json({ error: 'Устройство не подключено', code: 'device' });
 }
 
@@ -59,3 +86,14 @@ export function pinAttemptAllowed(deviceId) {
   return list.length < 5;
 }
 export const pinFailed = (deviceId) => failures.set(deviceId, [...(failures.get(deviceId) ?? []), Date.now()]);
+
+// --- OAuth state: signed and short-lived, protects the Poster callback -------
+// Carries a small payload (the chosen preset) through Poster's redirect.
+export const oauthState = (payload = '') => {
+  const exp = Date.now() + 10 * 60e3;
+  return `${payload}.${exp}.${hmac(`oauth.${payload}.${exp}`)}`;
+};
+export const checkOauthState = (state) => {
+  const [payload, exp, sig] = String(state ?? '').split('.');
+  return Number(exp) > Date.now() && safeEqual(sig, hmac(`oauth.${payload}.${exp}`)) ? payload : null;
+};
