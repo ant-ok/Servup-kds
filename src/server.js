@@ -1,12 +1,9 @@
-import http from 'node:http';
-import { Server } from 'socket.io';
 import { config } from './config.js';
 import { migrate, query, pool } from './db.js';
-import { deviceByToken } from './auth.js';
-import { createApp } from './app.js';
 import { createAccount } from './accounts.js';
 import { EngineManager } from './sync/engine.js';
 import { createTelegram, startBotPolling, AlertMonitor } from './alerts.js';
+import { createRuntime } from './runtime.js';
 
 if (process.env.NODE_ENV === 'production' && (config.appSecret === 'change-me-please' || config.platformPassword === 'platform')) {
   console.error('[kds] Задайте APP_SECRET и PLATFORM_PASSWORD в .env перед запуском');
@@ -22,6 +19,18 @@ process.on('uncaughtException', (err) => {
   process.exit(1);
 });
 
+// After a power cut the database may come up later than the app: wait for it
+// instead of crash-looping.
+for (let attempt = 1; ; attempt++) {
+  try {
+    await query('SELECT 1');
+    break;
+  } catch (err) {
+    if (attempt >= 60) throw err;
+    console.log(`[kds] база данных недоступна (${err.message}), повтор через 2 с…`);
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+}
 await migrate();
 
 // Single-venue setup straight from .env: the first start creates the account.
@@ -38,18 +47,6 @@ if (config.poster.bootstrapToken) {
 }
 
 const engines = new EngineManager();
-let io;
-
-// Screens are told "something changed" and re-read their board, so a missed
-// push can never leave them showing a partial state. Batched per venue.
-const pending = new Map();
-const notify = (accountId) => {
-  if (pending.has(accountId)) return;
-  pending.set(accountId, setTimeout(() => {
-    pending.delete(accountId);
-    io?.to(`acc:${accountId}`).emit('board');
-  }, 100));
-};
 
 // Telegram alerts, when a bot token is configured.
 const telegram = createTelegram();
@@ -60,40 +57,18 @@ if (telegram) {
   setInterval(() => monitor.check().catch((err) => console.error('[alerts]', err.message)), 60000);
 }
 
-const app = createApp({ engines, notify, telegram });
-const server = http.createServer(app);
-io = new Server(server, { pingInterval: 10000, pingTimeout: 8000 });
-
-io.use(async (socket, next) => {
-  const device = await deviceByToken(socket.handshake.auth?.deviceToken).catch(() => null);
-  if (!device) return next(new Error('device'));
-  socket.data.device = device;
-  next();
-});
-io.on('connection', (socket) => {
-  const accountId = socket.data.device.account_id;
-  socket.join(`acc:${accountId}`);
-  socket.emit('health', engines.health(accountId));
-});
-
-engines.on('changed', (e) => notify(e.accountId));
-engines.on('health', (e) => io.to(`acc:${e.accountId}`).emit('health', e.health));
-
-// Housekeeping: idempotency keys and expired sessions.
-setInterval(() => {
-  query(`DELETE FROM applied_ops WHERE created_at < now() - interval '2 days'`).catch(() => {});
-  query(`DELETE FROM kds_sessions WHERE expires_at < now()`).catch(() => {});
-}, 3600e3);
-
-server.listen(config.port, async () => {
+const runtime = createRuntime({ engines, telegram });
+runtime.server.listen(config.port, async () => {
   console.log(`[kds] ${config.publicUrl}  (экран: /kds/, админка: /admin/, платформа: /platform/)`);
   await engines.startAll();
 });
 
+let stopping = false;
 const shutdown = async () => {
+  if (stopping) return;
+  stopping = true;
   engines.stopAll();
-  io.close();
-  server.close();
+  await Promise.race([runtime.close(), new Promise((r) => setTimeout(r, 5000))]);
   await pool.end().catch(() => {});
   process.exit(0);
 };

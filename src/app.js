@@ -409,8 +409,8 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode, e
   // Norm (seconds from "taken" to "ready") and the venue's own recipe note.
   admin.put('/products/:productId/info', async (req, res) => {
     const b = req.body ?? {};
-    const norm = b.norm_seconds === null || b.norm_seconds === '' ? null : Number(b.norm_seconds);
-    if (norm !== null && norm !== undefined && !(norm > 0 && norm < 24 * 3600)) throw new ActionError('Норма — число секунд больше нуля', 400);
+    const norm = b.norm_seconds === undefined || b.norm_seconds === null || b.norm_seconds === '' ? null : Number(b.norm_seconds);
+    if (norm !== null && !(norm > 0 && norm < 24 * 3600)) throw new ActionError('Норма — число секунд больше нуля', 400);
     await query(
       `INSERT INTO product_info (account_id, poster_product_id, norm_seconds, recipe_note) VALUES ($1, $2, $3, $4)
        ON CONFLICT (account_id, poster_product_id) DO UPDATE SET
