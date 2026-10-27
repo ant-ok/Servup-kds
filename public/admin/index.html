@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Бар KDS — админка</title>
+  <link rel="icon" href="/icon.svg">
+  <link rel="stylesheet" href="admin.css">
+</head>
+<body>
+  <div id="login" class="login hidden">
+    <form id="loginForm" class="card">
+      <h1>Бар KDS</h1>
+      <input type="password" id="password" placeholder="Пароль администратора" autocomplete="current-password">
+      <button>Войти</button>
+      <div class="error" id="loginError"></div>
+    </form>
+  </div>
+
+  <div id="app" class="hidden">
+    <header>
+      <strong>Бар KDS</strong>
+      <nav id="tabs">
+        <button data-tab="reports" class="active">Отчёты</button>
+        <button data-tab="anomalies">Контроль</button>
+        <button data-tab="employees">Сотрудники</button>
+        <button data-tab="rates">Ставки</button>
+        <button data-tab="devices">Экраны</button>
+        <button data-tab="settings">Настройки</button>
+        <button data-tab="status">Состояние</button>
+      </nav>
+      <button id="logout" class="ghost">Выйти</button>
+    </header>
+    <div id="banner" class="banner hidden"></div>
+    <main id="view"></main>
+  </div>
+  <div id="toast" class="toast hidden"></div>
+  <script src="admin.js"></script>
+</body>
+</html>

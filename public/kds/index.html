@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <meta name="theme-color" content="#111418">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Бар KDS</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" href="/icon.svg">
+  <link rel="stylesheet" href="kds.css">
+</head>
+<body>
+  <header class="top">
+    <div class="status" id="status"><span class="dot"></span><span id="statusText">Подключение…</span></div>
+    <div class="staff" id="staff"></div>
+    <button class="add-staff" id="addStaff">+ Бармен</button>
+    <div class="clock" id="clock"></div>
+  </header>
+
+  <main id="board" class="board"></main>
+  <section id="doneStrip" class="done-strip"></section>
+
+  <div id="empty" class="empty hidden">Заказов нет</div>
+  <div id="toast" class="toast hidden"></div>
+
+  <div id="start" class="overlay">
+    <div class="panel center">
+      <h1>Бар KDS</h1>
+      <p id="startMsg">Нажмите, чтобы начать смену</p>
+      <button class="big" id="startBtn">Начать</button>
+    </div>
+  </div>
+
+  <div id="pinpad" class="overlay hidden">
+    <div class="panel pin">
+      <div class="pin-title">Введите PIN бармена</div>
+      <div class="pin-dots" id="pinDots"></div>
+      <div class="pin-grid" id="pinGrid"></div>
+      <div class="pin-error" id="pinError"></div>
+      <button class="link" id="pinCancel">Отмена</button>
+    </div>
+  </div>
+
+  <div id="confirm" class="overlay hidden">
+    <div class="panel center">
+      <p id="confirmText"></p>
+      <div class="row">
+        <button class="big secondary" id="confirmNo">Нет</button>
+        <button class="big" id="confirmYes">Да</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="kds.js"></script>
+</body>
+</html>

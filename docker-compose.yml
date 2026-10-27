@@ -1,0 +1,46 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: kds
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-kds}
+      POSTGRES_DB: kds
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kds"]
+      interval: 5s
+      retries: 10
+
+  app:
+    build: .
+    restart: always
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://kds:${DB_PASSWORD:-kds}@db:5432/kds
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  # Nightly database dump, kept for 30 days in ./backups
+  backup:
+    image: postgres:16-alpine
+    restart: always
+    environment:
+      PGPASSWORD: ${DB_PASSWORD:-kds}
+    volumes:
+      - ./backups:/backups
+    entrypoint: >
+      sh -c 'while true; do
+        pg_dump -h db -U kds kds | gzip > /backups/kds_$$(date +%F).sql.gz;
+        find /backups -name "*.sql.gz" -mtime +30 -delete;
+        sleep 86400; done'
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
