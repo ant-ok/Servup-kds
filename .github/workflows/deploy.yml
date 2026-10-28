@@ -2,10 +2,10 @@
 # (or press "Run workflow"). Tests and the stack check run first; the server
 # gets the code over SSH and ./install.sh updates it in place (data and .env kept).
 #
-# Repository secrets (Settings → Secrets and variables → Actions):
-#   DEPLOY_HOST      server IP or name
-#   DEPLOY_SSH_KEY   private key whose public half is in the server's ~/.ssh/authorized_keys
-#   DEPLOY_URL       https://… address of the installation, for the final health check
+# Settings → Secrets and variables → Actions:
+#   variable DEPLOY_HOST     server IP or name; while it's empty, releases are tested but not deployed
+#   variable DEPLOY_URL      https://… address of the installation, for the final health check
+#   secret   DEPLOY_SSH_KEY  private key whose public half is in the server's ~/.ssh/authorized_keys
 # Optional variables: DEPLOY_USER (root), DEPLOY_PATH (/opt/kds)
 name: deploy
 
@@ -24,18 +24,18 @@ jobs:
 
   deploy:
     needs: checks
+    if: vars.DEPLOY_HOST != ''
     runs-on: ubuntu-latest
     environment: production
     env:
-      HOST: ${{ secrets.DEPLOY_HOST }}
+      HOST: ${{ vars.DEPLOY_HOST }}
       USER_AT: ${{ vars.DEPLOY_USER || 'root' }}
       DIR: ${{ vars.DEPLOY_PATH || '/opt/kds' }}
-      URL: ${{ secrets.DEPLOY_URL }}
+      URL: ${{ vars.DEPLOY_URL }}
     steps:
       - uses: actions/checkout@v4
       - name: SSH key
         run: |
-          test -n "$HOST" || { echo "Секрет DEPLOY_HOST не задан"; exit 1; }
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
           ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
