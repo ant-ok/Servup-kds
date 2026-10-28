@@ -1,0 +1,57 @@
+# Rolls a release out to the venue server: push a tag like v1.0.0-beta.2
+# (or press "Run workflow"). Tests and the stack check run first; the server
+# gets the code over SSH and ./install.sh updates it in place (data and .env kept).
+#
+# Repository secrets (Settings → Secrets and variables → Actions):
+#   DEPLOY_HOST      server IP or name
+#   DEPLOY_SSH_KEY   private key whose public half is in the server's ~/.ssh/authorized_keys
+#   DEPLOY_URL       https://… address of the installation, for the final health check
+# Optional variables: DEPLOY_USER (root), DEPLOY_PATH (/opt/kds)
+name: deploy
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    uses: ./.github/workflows/test.yml
+
+  deploy:
+    needs: checks
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      HOST: ${{ secrets.DEPLOY_HOST }}
+      USER_AT: ${{ vars.DEPLOY_USER || 'root' }}
+      DIR: ${{ vars.DEPLOY_PATH || '/opt/kds' }}
+      URL: ${{ secrets.DEPLOY_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: SSH key
+        run: |
+          test -n "$HOST" || { echo "Секрет DEPLOY_HOST не задан"; exit 1; }
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      - name: Copy the code (the server's .env and backups are never touched)
+        run: |
+          ssh -i ~/.ssh/id_deploy "$USER_AT@$HOST" "mkdir -p '$DIR'"
+          rsync -az --delete -e "ssh -i ~/.ssh/id_deploy" \
+            --exclude .git --exclude node_modules --exclude .env --exclude backups --exclude 'pos-app/.cert' \
+            ./ "$USER_AT@$HOST:$DIR/"
+      - name: Update and restart
+        run: ssh -i ~/.ssh/id_deploy "$USER_AT@$HOST" "cd '$DIR' && chmod +x install.sh scripts/*.sh && sudo ./install.sh"
+      - name: Health check
+        if: env.URL != ''
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS "$URL/health" | tee /tmp/h | grep -q '"ok":true'; then cat /tmp/h; exit 0; fi
+            sleep 5
+          done
+          echo "Сервер не ответил после обновления. На сервере: ./scripts/doctor.sh"; exit 1

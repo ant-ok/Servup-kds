@@ -3,6 +3,7 @@ name: tests
 on:
   push:
   pull_request:
+  workflow_call:   # the deploy workflow runs the same checks first
 
 jobs:
   test:
