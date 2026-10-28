@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0A0D12">
+  <title>Выдача заказов</title>
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Выдача">
+  <style>
+    /* Guest-facing TV by the counter: two columns, numbers readable from across the room. */
+    :root {
+      --bg: #0A0D12; --surface: #121720; --line: #242C39; --fg: #E9EDF3; --muted: #7F8A9C;
+      --ok: #2EBD72; --ok-ink: #04210F; --crit: #F04D4D;
+      --f-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      --f-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font-family: var(--f-ui); overflow: hidden; cursor: default; }
+    .wrap { height: 100%; display: grid; grid-template-rows: auto 1fr; padding: max(2vh, env(safe-area-inset-top)) max(3vw, env(safe-area-inset-right)) 3vh max(3vw, env(safe-area-inset-left)); gap: 2vh; }
+    header { display: flex; align-items: baseline; justify-content: space-between; gap: 2vw; }
+    .venue { font-size: clamp(18px, 2.6vw, 40px); font-weight: 600; }
+    .clock { font: 600 clamp(16px, 2.2vw, 34px) var(--f-mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+    main { display: grid; grid-template-columns: 1fr 1.4fr; gap: 2vw; min-height: 0; }
+    section { border-radius: 2vh; padding: 2.5vh 2vw; display: grid; grid-template-rows: auto 1fr; gap: 2vh; min-height: 0; overflow: hidden; }
+    .prep { background: var(--surface); border: 1px solid var(--line); }
+    .ready { background: color-mix(in srgb, var(--ok) 12%, var(--bg)); border: 1px solid color-mix(in srgb, var(--ok) 45%, transparent); }
+    h2 { margin: 0; font-size: clamp(18px, 2.6vw, 44px); font-weight: 600; display: flex; align-items: center; gap: 1vw; }
+    .prep h2 { color: var(--muted); }
+    .ready h2 { color: var(--ok); }
+    h2 small { font-size: .55em; font-weight: 500; color: var(--muted); }
+    .nums { display: flex; flex-wrap: wrap; align-content: flex-start; gap: 1.6vh 1.6vw; overflow: hidden; }
+    .num { font: 700 clamp(28px, 6vw, 110px)/1 var(--f-mono); font-variant-numeric: tabular-nums; letter-spacing: .02em; }
+    .prep .num { font-size: clamp(22px, 4vw, 72px); color: var(--fg); opacity: .8; }
+    .ready .num { color: var(--ok); }
+    .ready .num.new { animation: pop 1s ease-out 3; }
+    @keyframes pop { 0% { color: var(--fg); transform: scale(1.12); } 100% { color: var(--ok); transform: scale(1); } }
+    .empty { color: var(--muted); font-size: clamp(14px, 1.8vw, 28px); }
+    .banner { position: fixed; left: 50%; bottom: 3vh; transform: translateX(-50%); padding: 12px 20px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); color: var(--muted); font-size: 16px; max-width: 90vw; text-align: center; }
+    .banner.bad { color: #fff; background: var(--crit); border-color: var(--crit); }
+    .banner button { font: inherit; color: var(--fg); background: none; border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; margin-left: 10px; cursor: pointer; }
+    @media (max-width: 700px) { main { grid-template-columns: 1fr; grid-template-rows: 1fr 1.4fr; } }
+    @media (prefers-reduced-motion: reduce) { .ready .num.new { animation: none; } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header><div class="venue" id="venue">Выдача заказов</div><div class="clock" id="clock"></div></header>
+    <main>
+      <section class="prep"><h2>Готовится</h2><div class="nums" id="prep"></div></section>
+      <section class="ready"><h2>Готово — заберите <small id="readyCount"></small></h2><div class="nums" id="ready"></div></section>
+    </main>
+  </div>
+  <div class="banner" id="banner" hidden></div>
+<script>
+'use strict';
+// The admin gives a link /pickup/#k=TOKEN; it's kept so the TV survives restarts.
+const $ = (id) => document.getElementById(id);
+const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch { /* ignore */ } } };
+const fromHash = new URLSearchParams(location.hash.slice(1)).get('k');
+if (fromHash) { store.set('pickup_token', fromHash); history.replaceState(null, '', location.pathname); }
+const token = fromHash || store.get('pickup_token');
+
+let seenReady = null;   // numbers already shown as ready; null until the first load
+let version = null;
+let lastOk = 0;
+let audio = null;
+
+function banner(text, bad = false, action = null) {
+  const b = $('banner');
+  if (!text) { b.hidden = true; return; }
+  b.hidden = false; b.className = `banner${bad ? ' bad' : ''}`; b.textContent = text;
+  if (action) { const btn = document.createElement('button'); btn.textContent = action.label; btn.onclick = action.run; b.appendChild(btn); }
+}
+
+// Browsers play sound only after a tap; one tap on the TV also goes fullscreen.
+function enableSound() {
+  try { audio = new (window.AudioContext || window.webkitAudioContext)(); } catch { audio = null; }
+  document.documentElement.requestFullscreen?.().catch(() => {});
+  banner(null);
+}
+function chime() {
+  if (!audio) return;
+  for (const [f, t] of [[660, 0], [880, 0.18]]) {
+    const o = audio.createOscillator(); const g = audio.createGain();
+    o.frequency.value = f; g.gain.setValueAtTime(0.2, audio.currentTime + t);
+    g.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + t + 0.5);
+    o.connect(g).connect(audio.destination); o.start(audio.currentTime + t); o.stop(audio.currentTime + t + 0.5);
+  }
+}
+
+function draw(data) {
+  $('venue').textContent = data.venue || 'Выдача заказов';
+  const fresh = seenReady ? data.ready.filter((n) => !seenReady.has(n)) : [];
+  $('prep').innerHTML = data.preparing.length ? data.preparing.map((n) => `<span class="num">${n}</span>`).join('') : '<span class="empty">Нет заказов в работе</span>';
+  $('ready').innerHTML = data.ready.length ? data.ready.map((n) => `<span class="num${fresh.includes(n) ? ' new' : ''}">${n}</span>`).join('') : '<span class="empty">Пока нечего забирать</span>';
+  $('readyCount').textContent = data.ready.length ? `· ${data.ready.length}` : '';
+  if (fresh.length) chime();
+  seenReady = new Set(data.ready);
+}
+
+async function load() {
+  if (!token) return banner('Откройте ссылку на экран выдачи из админки: Экраны и кассы → Экран выдачи.', true);
+  try {
+    const res = await fetch(`/api/pickup/${encodeURIComponent(token)}`, { cache: 'no-store' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return banner(data.error || 'Экран выдачи недоступен', true);
+    if (version && data.version && data.version !== version) return location.reload();
+    version ??= data.version;
+    lastOk = Date.now();
+    draw(data);
+    if (!audio) banner('Коснитесь экрана, чтобы включить звук и полный экран', false, { label: 'Включить', run: enableSound });
+    else banner(null);
+  } catch {
+    if (Date.now() - lastOk > 15000) banner('Нет связи с сервером, пробуем снова…', true);
+  }
+}
+
+function tick() { $('clock').textContent = new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }); }
+document.addEventListener('click', () => { if (!audio) enableSound(); }, { once: true });
+tick(); setInterval(tick, 10000);
+load(); setInterval(load, 3000);
+</script>
+</body>
+</html>

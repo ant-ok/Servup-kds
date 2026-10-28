@@ -11,12 +11,13 @@ import {
   newPairCode, pairAttemptAllowed, pairFailed,
 } from './auth.js';
 import { orderStatus } from './pos.js';
-import { applyAction, serveTicket, startSession, endSession, dismissTicket, getBoard, ActionError } from './units.js';
+import { applyAction, serveTicket, startSession, endSession, dismissTicket, getBoard, getPickupBoard, ActionError } from './units.js';
 import { REPORTS, toCsv } from './reports.js';
 import { getSummary, getRecipe, suggestNorms } from './kitchen.js';
 import { createLinkCode } from './alerts.js';
 import { createAccount, DEFAULT_SETTINGS } from './accounts.js';
 import { stationResolver } from './sync/reconcile.js';
+import { venueTimeZone, venueCurrency } from './sync/engine.js';
 import { verifyWebhook, classifyWebhook, webhookData } from './poster/webhook.js';
 import { exchangeOAuthCode, exchangeManageCode } from './poster/client.js';
 
@@ -31,7 +32,7 @@ const CLIENT_VERSION = (() => {
   }
   return h.digest('hex').slice(0, 12);
 })();
-const PRESETS = ['bar', 'restaurant'];
+const PRESETS = ['bar', 'restaurant', 'fastfood'];
 
 export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode, exchangeManage = exchangeManageCode, telegram = null }) {
   const app = express();
@@ -175,6 +176,17 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode, e
   }
 
   // ---- Pairing: a screen or a register enters the 6-digit code from the admin --
+  // Pickup screen for guests: a TV by the counter opens /pickup/#k=TOKEN.
+  // Read-only and shows order numbers only, so a long secret link is enough.
+  app.get('/api/pickup/:token', async (req, res) => {
+    const { rows } = await query(
+      `SELECT a.id, a.name FROM settings s JOIN accounts a ON a.id = s.account_id
+       WHERE s.key = 'pickup_token' AND s.value = to_jsonb($1::text)`, [String(req.params.token)]);
+    if (!rows[0]) return res.status(404).json({ error: 'Ссылка на экран выдачи устарела. Возьмите новую в админке.' });
+    res.set('Cache-Control', 'no-store');
+    res.json({ venue: rows[0].name, ...(await getPickupBoard(rows[0].id)), serverTime: new Date().toISOString(), version: CLIENT_VERSION });
+  });
+
   app.post('/api/pair', async (req, res) => {
     const ip = req.ip;
     if (!pairAttemptAllowed(ip)) return res.status(429).json({ error: 'Слишком много попыток, подождите 10 минут' });
@@ -325,6 +337,23 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode, e
   });
 
   admin.get('/account', async (req, res) => res.json(req.account));
+
+  // -- pickup screen link (fast food)
+  async function pickupToken(accountId, renew = false) {
+    const current = (await getSettings(accountId)).pickup_token;
+    if (current && !renew) return current;
+    const token = newToken();
+    await query(
+      `INSERT INTO settings (account_id, key, value) VALUES ($1, 'pickup_token', $2)
+       ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`, [accountId, JSON.stringify(token)]);
+    return token;
+  }
+  admin.get('/pickup', async (req, res) => res.json({ token: await pickupToken(A(req)) }));
+  admin.post('/pickup/renew', async (req, res) => {
+    const token = await pickupToken(A(req), true);
+    await audit(pool, { accountId: A(req), actor: 'admin', action: 'pickup_link_renewed' });
+    res.json({ token });
+  });
   admin.patch('/account', async (req, res) => {
     const b = req.body ?? {};
     if (b.name) await query('UPDATE accounts SET name = $2, updated_at = now() WHERE id = $1', [A(req), String(b.name)]);
@@ -336,8 +365,9 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode, e
   });
 
   const EDITABLE = ['credit_made_then_removed', 'warn_minutes', 'critical_minutes', 'ready_visible_seconds', 'day_start_hour', 'maker_title',
-    'release_mode'];
-  admin.get('/settings', async (req, res) => res.json(await getSettings(A(req))));
+    'release_mode', 'quick_service', 'pickup_minutes'];
+  const withVenue = (s) => ({ ...s, currency: venueCurrency(s), timezone: venueTimeZone(s) });
+  admin.get('/settings', async (req, res) => res.json(withVenue(await getSettings(A(req)))));
   admin.put('/settings', async (req, res) => {
     await tx(async (c) => {
       for (const k of EDITABLE) {
@@ -350,7 +380,7 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode, e
       await audit(c, { accountId: A(req), actor: 'admin', action: 'settings_changed', details: req.body });
     });
     notify(A(req));
-    res.json(await getSettings(A(req)));
+    res.json(withVenue(await getSettings(A(req))));
   });
 
   // -- stations
@@ -594,7 +624,7 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode, e
     if (format === 'csv' && REPORT_COLUMNS[req.params.kind]) {
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
       res.setHeader('Content-Disposition', `attachment; filename="${req.params.kind}_${from}_${to}.csv"`);
-      return res.send(toCsv(data, REPORT_COLUMNS[req.params.kind]));
+      return res.send(toCsv(data, REPORT_COLUMNS[req.params.kind], venueTimeZone(await getSettings(A(req)))));
     }
     res.json(data);
   });

@@ -3,11 +3,16 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-  <meta name="theme-color" content="#111418">
+  <meta name="theme-color" content="#0A0D12">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>KDS</title>
   <link rel="manifest" href="/manifest.json">
-  <link rel="icon" href="/icon.svg">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-title" content="KDS">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="mobile-web-app-capable" content="yes">
   <link rel="stylesheet" href="kds.css">
 </head>
 <body>
@@ -66,6 +71,15 @@
       <div class="recipe-head"><h2 id="recipeName"></h2><button class="sum-close" id="recipeClose">✕</button></div>
       <img id="recipePhoto" class="recipe-photo hidden" alt="">
       <div id="recipeBody"></div>
+    </div>
+  </div>
+
+  <div id="picker" class="overlay hidden">
+    <div class="panel">
+      <div class="pin-title" id="pickTitle">Кто?</div>
+      <div class="pick-grid" id="pickGrid"></div>
+      <button class="link" id="pickOther">Другой сотрудник — по PIN</button>
+      <button class="link" id="pickCancel">Отмена</button>
     </div>
   </div>
 

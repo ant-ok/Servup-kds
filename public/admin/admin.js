@@ -1,7 +1,10 @@
 'use strict';
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
-const money = (v) => Number(v ?? 0).toLocaleString('ru-RU', { maximumFractionDigits: 2 });
+// The venue's currency (from Poster) is loaded at startup; until then amounts show as plain numbers.
+let currency = null;
+const money = (v) => Number(v ?? 0).toLocaleString('ru-RU', currency
+  ? { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 2 } : { maximumFractionDigits: 2 });
 const dur = (s) => (s == null ? '—' : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`);
 const dt = (v) => (v ? new Date(v).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—');
 
@@ -117,7 +120,7 @@ views.reports = async () => {
     { key: 'name', title: 'Сотрудник' },
     ...(prepStations().length > 1 ? [{ key: 'stations', title: 'Станции' }] : []),
     { key: 'portions', title: 'Порций', num: true },
-    { key: 'earned', title: 'Начислено, ₽', num: true, fmt: money },
+    { key: 'earned', title: 'Начислено', num: true, fmt: money },
     { key: 'checks', title: 'Чеков', num: true },
     { key: 'avg_make_sec', title: 'Ср. приготовление', num: true, fmt: dur },
     { key: 'avg_total_sec', title: 'Ср. ожидание гостя', num: true, fmt: dur },
@@ -138,7 +141,7 @@ views.reports = async () => {
     cs.appendChild(table([
       { key: 'name', title: 'Станция' }, { key: 'portions', title: 'Порций', num: true },
       { key: 'avg_total_sec', title: 'Ср. время', num: true, fmt: dur }, { key: 'p90_total_sec', title: '90% быстрее', num: true, fmt: dur },
-      { key: 'earned', title: 'Начислено, ₽', num: true, fmt: money }, { key: 'people', title: 'Сотрудников', num: true },
+      { key: 'earned', title: 'Начислено', num: true, fmt: money }, { key: 'people', title: 'Сотрудников', num: true },
     ], stats));
     view.appendChild(cs);
   }
@@ -156,8 +159,8 @@ views.reports = async () => {
   c2.appendChild(table([
     { key: 'name', title: 'Сотрудник' },
     { key: 'checks', title: 'Закрыто чеков', num: true },
-    { key: 'payed', title: 'Оплачено, ₽', num: true, fmt: money },
-    { key: 'avg_check', title: 'Средний чек, ₽', num: true, fmt: money },
+    { key: 'payed', title: 'Оплачено', num: true, fmt: money },
+    { key: 'avg_check', title: 'Средний чек', num: true, fmt: money },
     { key: 'kds_portions', title: 'Порций через KDS', num: true },
   ], sell, { foot: { name: 'Итого', checks: sum(sell, 'checks'), payed: money(sum(sell, 'payed')), kds_portions: sum(sell, 'kds_portions') } }));
   c2.insertAdjacentHTML('beforeend', '<p class="muted">Данные из закрытых чеков Poster. Для прошлых периодов до запуска KDS загрузите историю во вкладке «Состояние».</p>');
@@ -291,7 +294,7 @@ views.rates = async () => {
     за которое делали 75% порций за последние 30 дней. <b>Техкарта</b> подтягивается из Poster; заметка — ваши подсказки по приготовлению и подаче.</p>`);
   c.appendChild(table([
     { key: 'station_name', title: 'Станция' }, { key: 'category_name', title: 'Категория' }, { key: 'name', title: 'Позиция' },
-    { key: 'rate', title: 'Ставка, ₽', html: (r) => `<input type="number" min="0" step="1" style="width:90px" data-rate="${r.id}" value="${r.rate ?? ''}" placeholder="—">` },
+    { key: 'rate', title: 'Ставка за порцию', html: (r) => `<input type="number" min="0" step="0.01" inputmode="decimal" style="width:90px" data-rate="${r.id}" value="${r.rate ?? ''}" placeholder="—">` },
     { key: 'norm_seconds', title: 'Норма, сек', html: (r) => `<input type="number" min="1" step="5" style="width:90px" data-norm="${r.id}" value="${r.norm_seconds ?? ''}" placeholder="—">` },
     { key: 'median_sec', title: 'Факт (медиана)', num: true, fmt: (v, r) => (v == null ? '—' : `${dur(v)} (${r.samples})`) },
     { key: 'ingredients', title: 'Техкарта', html: (r) => `<button class="light small" data-recipe="${r.id}">${r.ingredients ? `${r.ingredients} ингр.` : 'открыть'}</button>` },
@@ -383,7 +386,31 @@ views.devices = async () => {
   c.querySelectorAll('[data-off]').forEach((b) => {
     b.onclick = run(async () => { if (confirm('Отключить устройство?')) { await api(`/devices/${b.dataset.off}`, { method: 'DELETE' }); render(); } });
   });
+  view.appendChild(await pickupCard());
 };
+
+// Guest-facing pickup TV (fast food): a secret read-only link, renewable.
+async function pickupCard() {
+  const st = await api('/settings');
+  const c = card('Экран выдачи для гостей');
+  const draw = (token) => {
+    const link = `${location.origin}/pickup/#k=${token}`;
+    c.querySelector('#pk')?.remove();
+    c.insertAdjacentHTML('beforeend', `<div id="pk">
+      <p class="muted">Телевизор у стойки: слева номера, которые готовятся, справа — готовые к выдаче. Номер — последние три цифры чека Poster.
+        ${st.quick_service ? '' : 'Включите «Фастфуд» в настройках, чтобы номера заказов были и на экранах кухни.'}</p>
+      <p><code>${esc(link)}</code></p>
+      <p><button class="light small" id="pkCopy">Копировать ссылку</button> <a href="${esc(link)}" target="_blank" rel="noopener"><button class="light small">Открыть</button></a>
+        <button class="danger small" id="pkRenew">Сменить ссылку</button></p></div>`);
+    c.querySelector('#pkCopy').onclick = () => navigator.clipboard?.writeText(link).then(() => toast('Скопировано'));
+    c.querySelector('#pkRenew').onclick = run(async () => {
+      if (!confirm('Старая ссылка перестанет работать. Сменить?')) return;
+      draw((await api('/pickup/renew', { method: 'POST', body: {} })).token);
+    });
+  };
+  draw((await api('/pickup')).token);
+  return c;
+}
 
 // ---- settings ------------------------------------------------------------------------------
 views.settings = async () => {
@@ -397,11 +424,15 @@ views.settings = async () => {
       <span>Когда заказ появляется на экране</span><select id="release">
         <option value="on_add" ${st.release_mode !== 'on_send' ? 'selected' : ''}>Сразу, как пробили в чек</option>
         <option value="on_send" ${st.release_mode === 'on_send' ? 'selected' : ''}>После «Отправить в цех» в Poster (или оплаты)</option></select>
+      <span>Формат заведения</span><select id="quick">
+        <option value="0" ${st.quick_service ? '' : 'selected'}>Зал: столы, официанты</option>
+        <option value="1" ${st.quick_service ? 'selected' : ''}>Фастфуд: номера заказов, оплата сразу, экран выдачи</option></select>
       <span>Как экран называет сотрудников</span><input id="maker" value="${esc(st.maker_title ?? 'Сотрудник')}" placeholder="Бармен / Повар / Сотрудник">
       <span>Жёлтый через, мин</span><input type="number" id="warn" value="${st.warn_minutes}">
       <span>Красный через, мин</span><input type="number" id="crit" value="${st.critical_minutes}">
       <span>Готовые видны, сек</span><input type="number" id="vis" value="${st.ready_visible_seconds}">
       <span>Начало рабочего дня, час</span><input type="number" id="dsh" min="0" max="12" value="${st.day_start_hour}">
+      <span>Валюта и часовой пояс</span><span class="muted">${esc(st.currency)} · ${esc(st.timezone)} — из настроек Poster</span>
       <span>Новый пароль админки</span><input type="password" id="pwd" placeholder="не менять" autocomplete="new-password">
     </div>
     <p><label class="inline"><input type="checkbox" id="credit" ${st.credit_made_then_removed !== false ? 'checked' : ''}>
@@ -414,7 +445,7 @@ views.settings = async () => {
       warn_minutes: Number(c.querySelector('#warn').value), critical_minutes: Number(c.querySelector('#crit').value),
       ready_visible_seconds: Number(c.querySelector('#vis').value), day_start_hour: Number(c.querySelector('#dsh').value),
       credit_made_then_removed: c.querySelector('#credit').checked, maker_title: c.querySelector('#maker').value.trim() || 'Сотрудник',
-      release_mode: c.querySelector('#release').value,
+      release_mode: c.querySelector('#release').value, quick_service: c.querySelector('#quick').value === '1',
     } });
     const pwd = c.querySelector('#pwd').value;
     await api('/account', { method: 'PATCH', body: { name: c.querySelector('#accName').value.trim(), ...(pwd ? { password: pwd } : {}) } });
@@ -569,7 +600,7 @@ async function checkBanner() {
 }
 
 async function boot() {
-  try { await checkBanner(); stationsCache = await api('/stations'); } catch { return; }
+  try { await checkBanner(); stationsCache = await api('/stations'); currency = (await api('/settings')).currency ?? null; } catch { return; }
   $('app').classList.remove('hidden');
   render();
   setInterval(() => checkBanner().catch(() => {}), 30000);

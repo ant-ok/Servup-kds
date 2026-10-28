@@ -21,7 +21,9 @@ export const config = {
   platformPassword: env('PLATFORM_PASSWORD', 'platform'),
   // Public https address of this installation, used for Poster OAuth redirects.
   publicUrl: env('PUBLIC_URL', 'http://localhost:3000'),
-  timezone: env('TZ_NAME', 'Europe/Moscow'),
+  // Fallbacks when Poster doesn't report the venue's own (settings.getAllSettings).
+  timezone: env('TZ_NAME', 'Europe/Tallinn'),
+  currency: env('CURRENCY', 'EUR'),
   // Who may show our pages in a frame: Poster's admin panel and its register app.
   frameAncestors: env('FRAME_ANCESTORS', 'https://joinposter.com https://*.joinposter.com https://pos.ps https://*.pos.ps'),
 
@@ -39,6 +41,7 @@ export const config = {
     bootstrapToken: env('POSTER_TOKEN', ''),
     bootstrapAccount: env('POSTER_ACCOUNT', ''),
     bootstrapAdminPassword: env('ADMIN_PASSWORD', ''),
+    bootstrapPreset: env('VENUE_TYPE', 'bar'), // bar | restaurant | fastfood
     // Reject webhooks with a bad signature. Off by default: a webhook only
     // triggers a re-fetch from the Poster API, so a forged one can't inject data.
     webhookStrict: env('POSTER_WEBHOOK_STRICT', 'false') === 'true',

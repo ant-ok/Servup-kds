@@ -56,9 +56,10 @@ const ymd = (d) => d.toISOString().slice(0, 10).replace(/-/g, '');
 export function createPosterClient(token) {
   const api = (method, params) => call(token, method, params);
   return {
-    async getTransactions({ from, to, status = 0 }) {
+    // light: ids and statuses only, without the items (cheap enough to ask every few seconds).
+    async getTransactions({ from, to, status = 0, light = false }) {
       return listOf(await api('dash.getTransactions',
-        { dateFrom: ymd(from), dateTo: ymd(to), status, include_products: true, include_history: true }));
+        { dateFrom: ymd(from), dateTo: ymd(to), status, ...(light ? {} : { include_products: true, include_history: true }) }));
     },
     async getTransaction(id) {
       const r = await api('dash.getTransaction', { transaction_id: id, include_products: true, include_history: true });

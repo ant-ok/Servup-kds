@@ -41,6 +41,7 @@ if (config.poster.bootstrapToken) {
     const acc = await createAccount({
       name: config.poster.bootstrapAccount || 'Моё заведение', posterAccount: config.poster.bootstrapAccount || null,
       token: config.poster.bootstrapToken, password: config.poster.bootstrapAdminPassword || null,
+      preset: config.poster.bootstrapPreset,
     });
     console.log(`[kds] создано заведение #${acc.id} из POSTER_TOKEN (вход в админку: «${config.poster.bootstrapAccount || acc.id}»)`);
   }

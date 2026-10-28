@@ -311,6 +311,61 @@ test('expo over HTTP: serve, undo within the window, double serve is a no-op', a
   assert.equal((await expo.kds('/api/kds/tickets/999999/serve', { method: 'POST', body: { op_id: op(), token: t } })).status, 404);
 });
 
+test('fast food: a check paid at once reaches the kitchen on the fast poll; order number and pickup screen', async () => {
+  const v = await s.venue({ preset: 'fastfood' });
+  assert.deepEqual(v.stations.map((x) => x.name).sort(), ['Выдача', 'Кухня']);
+  await staff(v, 'Повар', '3333');
+  await staff(v, 'Кассир', '4444');
+  const kitchen = await screen(v, 'Кухня');
+  const pickup = await screen(v, 'Выдача');
+  const id = v.fake.open({ table: '' });
+  v.fake.transactions.get(String(id)).service_mode = '2';
+  v.fake.add(id, 20, 2);
+  v.fake.close(id);                      // paid before the screen ever saw it
+  await v.engine.pollOpen();
+  const board = (await kitchen.kds('/api/kds/board')).data;
+  assert.equal(board.quickService, true);
+  assert.equal(board.tickets.length, 1);
+  assert.equal(board.tickets[0].service_mode, 2);
+  const number = String(id % 1000).padStart(3, '0');
+
+  const token = (await v.admin('/api/admin/pickup')).data.token;
+  assert.equal((await v.admin('/api/admin/pickup')).data.token, token, 'the link is stable');
+  const guests = s.client();
+  let tv = (await guests(`/api/pickup/${token}`)).data;
+  assert.deepEqual([tv.preparing, tv.ready], [[number], []]);
+
+  const cook = (await kitchen.kds('/api/kds/login', { method: 'POST', body: { pin: '3333' } })).data.token;
+  await kitchen.kds('/api/kds/action', { method: 'POST',
+    body: { op_id: op(), token: cook, action: 'ready', unit_ids: board.tickets[0].units.map((u) => u.id) } });
+  tv = (await guests(`/api/pickup/${token}`)).data;
+  assert.deepEqual([tv.preparing, tv.ready], [[], [number]]);
+
+  const cashier = (await pickup.kds('/api/kds/login', { method: 'POST', body: { pin: '4444' } })).data.token;
+  await pickup.kds(`/api/kds/tickets/${board.tickets[0].id}/serve`, { method: 'POST', body: { op_id: op(), token: cashier } });
+  tv = (await guests(`/api/pickup/${token}`)).data;
+  assert.deepEqual([tv.preparing, tv.ready], [[], []], 'handed out: gone from the TV');
+
+  const renewed = (await v.admin('/api/admin/pickup/renew', { method: 'POST', body: {} })).data.token;
+  assert.notEqual(renewed, token);
+  assert.equal((await guests(`/api/pickup/${token}`)).status, 404);
+  assert.equal((await guests(`/api/pickup/${renewed}`)).status, 200);
+  assert.equal((await guests('/pickup/')).status, 200);
+});
+
+test('the fast poll stays light: open checks, and in fast food closed check ids only', async () => {
+  const v = await s.venue({ preset: 'restaurant' });
+  const calls = [];
+  const orig = v.fake.getTransactions.bind(v.fake);
+  v.fake.getTransactions = (q) => { calls.push(`${q.status}${q.light ? ' light' : ''}`); return orig(q); };
+  await v.engine.pollOpen();
+  assert.deepEqual(calls, ['1']);
+  // fast food: plus closed checks, ids only — never the whole day with items every few seconds
+  await v.admin('/api/admin/settings', { method: 'PUT', body: { quick_service: true } });
+  await v.engine.pollOpen();
+  assert.deepEqual(calls, ['1', '1', '2 light']);
+});
+
 // ---- platform, onboarding, health ------------------------------------------------------
 
 test('platform: name required, list shows health and counts, impersonation opens the venue admin', async () => {
@@ -353,4 +408,21 @@ test('static pages are served', async () => {
   for (const path of ['/', '/kds/', '/admin/', '/platform/', '/manifest.json', '/sw.js', '/kds/kds.js', '/socket.io/socket.io.js']) {
     assert.equal((await c(path, { raw: true })).status, 200, path);
   }
+});
+
+test('the screen installs as an app: manifest with PNG icons that exist, icon for iPhone', async () => {
+  const c = s.client();
+  const m = (await c('/manifest.json')).data;
+  assert.equal(m.start_url, '/kds/');
+  const png = m.icons.filter((i) => i.type === 'image/png');
+  for (const size of ['192x192', '512x512']) assert.ok(png.some((i) => i.sizes === size && i.purpose === 'any'), size);
+  assert.ok(png.some((i) => i.purpose === 'maskable'), 'maskable icon for Android');
+  for (const i of [...png, { src: '/apple-touch-icon.png' }]) {
+    const res = await c(i.src, { raw: true });
+    assert.equal(res.status, 200, i.src);
+    assert.match(res.headers.get('content-type'), /image\/png/, i.src);
+  }
+  const html = (await c('/kds/', { raw: true })).data;
+  assert.match(html, /rel="manifest"/);
+  assert.match(html, /rel="apple-touch-icon"/);
 });

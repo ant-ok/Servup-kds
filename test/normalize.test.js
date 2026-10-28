@@ -169,3 +169,17 @@ test('desiredUnits: whole portions split, weighed amounts stay one unit, removed
   assert.equal(desiredUnits({ ...t, status: 3 }, { catalog, stationFor: () => 1 }).wanted.size, 0);
   assert.equal(desiredUnits(t, { catalog, stationFor: () => null }).wanted.size, 0, 'no station, no units');
 });
+
+test('currency code and venue fallbacks', async () => {
+  const { currencyCode, venueCurrency, venueTimeZone } = await import('../src/sync/engine.js');
+  const { toCsv } = await import('../src/reports.js');
+  assert.equal(currencyCode({ code_iso: 'EUR' }), 'EUR');
+  assert.equal(currencyCode(' rub '), 'RUB');
+  assert.equal(currencyCode({ currency_symbol: '€' }), null);
+  assert.equal(currencyCode('Евро'), null);
+  assert.equal(venueCurrency({}), 'EUR');
+  assert.equal(venueTimeZone({ timezone: 'Not/AZone' }), 'Europe/Tallinn');
+  // CSV times are written in the venue's zone: 21:30 UTC is 00:30 in Tallinn in summer
+  const csv = toCsv([{ at: new Date('2026-07-01T21:30:00Z') }], [['at', 'Время']], 'Europe/Tallinn');
+  assert.match(csv, /02\.07\.2026, 00:30/);
+});

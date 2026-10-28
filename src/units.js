@@ -152,9 +152,10 @@ export async function dismissTicket(ticketId, device) {
   });
 }
 
-const TICKET_FIELDS = `tk.id, tk.round, tk.created_at, tk.served_at, sb.name AS served_by_name,
+const TICKET_FIELDS = `tk.id, tk.round, tk.created_at, tk.served_at, tk.served_by, sb.name AS served_by_name,
   t.poster_transaction_id AS transaction_id, t.table_name, t.hall_name, t.waiter_name, t.guests, t.comment,
-  t.status AS check_status, t.tablet_id`;
+  t.status AS check_status, t.tablet_id,
+  CASE WHEN t.raw->>'service_mode' ~ '^[0-9]+$' THEN (t.raw->>'service_mode')::int END AS service_mode`;
 
 async function unitsFor(ticketIds, stationId) {
   if (!ticketIds.length) return [];
@@ -210,6 +211,38 @@ export async function getExpoBoard(accountId) {
   return attach(tickets, await unitsFor(tickets.map((t) => t.id), null));
 }
 
+// Pickup screen for guests (fast food): orders still cooking and orders ready
+// to collect. A ready order stays up until it is handed out at the pickup
+// counter, or for pickup_minutes when the venue has no pickup screen.
+export async function getPickupBoard(accountId) {
+  const s = await getSettings(accountId);
+  const { rows } = await query(
+    `SELECT t.poster_transaction_id AS transaction_id, tk.created_at,
+            bool_and(u.status = 'ready') AS ready, max(u.ready_at) AS ready_at
+     FROM tickets tk JOIN transactions t ON t.id = tk.transaction_id
+     JOIN units u ON u.ticket_id = tk.id AND u.status <> 'cancelled'
+     WHERE tk.account_id = $1 AND tk.served_at IS NULL AND tk.created_at > now() - interval '3 hours'
+     GROUP BY t.poster_transaction_id, tk.id, tk.created_at
+     ORDER BY tk.created_at`, [accountId]);
+  const keep = Number(s.pickup_minutes ?? 10) * 60e3;
+  const byCheck = new Map();
+  // A check with several rounds is ready only when every round is.
+  for (const r of rows) {
+    const c = byCheck.get(r.transaction_id) ?? { number: orderNumber(r.transaction_id), ready: true, readyAt: null };
+    c.ready &&= r.ready;
+    if (r.ready_at && (!c.readyAt || r.ready_at > c.readyAt)) c.readyAt = r.ready_at;
+    byCheck.set(r.transaction_id, c);
+  }
+  const all = [...byCheck.values()].filter((c) => !c.ready || Date.now() - new Date(c.readyAt) < keep);
+  return {
+    preparing: all.filter((c) => !c.ready).map((c) => c.number),
+    ready: all.filter((c) => c.ready).sort((a, b) => new Date(b.readyAt) - new Date(a.readyAt)).map((c) => c.number),
+  };
+}
+
+// What the guest hears and sees: the last three digits of the Poster check.
+export const orderNumber = (transactionId) => String(Number(transactionId) % 1000).padStart(3, '0');
+
 export async function getBoard(device) {
   const station = device.station_id
     ? (await query('SELECT id, name, kind, group_items FROM stations WHERE id = $1 AND account_id = $2', [device.station_id, device.account_id])).rows[0]
@@ -217,5 +250,6 @@ export async function getBoard(device) {
   const tickets = station?.kind === 'expo'
     ? await getExpoBoard(device.account_id)
     : await getPrepBoard(device.account_id, station?.id ?? null);
-  return { station: station ?? { id: null, name: 'Все станции', kind: 'prep', group_items: false }, tickets };
+  const quickService = (await getSettings(device.account_id)).quick_service === true;
+  return { station: station ?? { id: null, name: 'Все станции', kind: 'prep', group_items: false }, tickets, quickService };
 }

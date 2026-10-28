@@ -87,6 +87,7 @@ async function loadBoard() {
       data.tickets.forEach((t) => state.seen.add(t.id));
       state.tickets = data.tickets;
       state.station = data.station;
+      state.quickService = data.quickService === true;
       if (state.summaryOpen) loadSummary();
       state.online = true;
       render();
@@ -116,9 +117,9 @@ function renderStaff() {
   el.innerHTML = '';
   for (const s of state.staff) {
     const b = document.createElement('button');
-    b.className = `chip${s.id === state.current ? ' active' : ''}`;
+    b.className = 'chip';
     b.textContent = s.name;
-    b.onclick = () => { state.current = s.id; saveStaff(); renderStaff(); };
+    b.onclick = () => toast('Чтобы завершить смену, удерживайте имя', 'info');
     let hold;
     b.onpointerdown = () => { hold = setTimeout(async () => {
       if (await confirmBox(`Завершить смену: ${s.name}?`)) {
@@ -181,6 +182,30 @@ async function ensureStaff() {
   return currentStaff();
 }
 
+// Who is doing this? Nobody on shift: PIN. The person the portion belongs to is
+// on shift here, or only one person is: no question. Otherwise pick a name.
+async function pickStaff(title, preferId = null) {
+  if (!state.staff.length) { await askPin(); return currentStaff(); }
+  const preferred = state.staff.find((s) => s.id === preferId);
+  if (preferred) return preferred;
+  if (state.staff.length === 1) return state.staff[0];
+  return new Promise((resolve) => {
+    $('pickTitle').textContent = title;
+    const grid = $('pickGrid');
+    grid.innerHTML = '';
+    const done = (v) => { $('picker').classList.add('hidden'); resolve(v); };
+    for (const s of state.staff) {
+      const b = document.createElement('button');
+      b.innerHTML = `<span class="av">${esc(s.name.slice(0, 1))}</span>${esc(s.name)}`;
+      b.onclick = () => done(s);
+      grid.appendChild(b);
+    }
+    $('pickOther').onclick = async () => { $('picker').classList.add('hidden'); await askPin(); resolve(currentStaff()); };
+    $('pickCancel').onclick = () => done(null);
+    $('picker').classList.remove('hidden');
+  });
+}
+
 // ---- confirm dialog -----------------------------------------------------------
 function confirmBox(text) {
   return new Promise((resolve) => {
@@ -193,15 +218,14 @@ function confirmBox(text) {
 }
 
 // ---- actions: queued with an op id, applied once even if retried ------------
-function enqueueOp(path, body) {
-  const who = currentStaff();
+function enqueueOp(path, body, who = currentStaff()) {
   state.queue.push({ path, staffId: who.id,
     body: { op_id: crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`, token: who.token, ...body } });
   store.set('kds_queue', state.queue);
   render();
   flush();
 }
-const enqueue = (action, unitIds) => enqueueOp('/action', { action, unit_ids: unitIds });
+const enqueue = (action, unitIds, who) => enqueueOp('/action', { action, unit_ids: unitIds }, who);
 
 let flushing = false;
 async function flush() {
@@ -235,37 +259,54 @@ const isOpen = (u) => u.status === 'new' || u.status === 'taken';
 async function onRowTap(group) {
   const u = group[0];
   const ids = group.map((x) => x.id);
+  const what = `«${u.name}»${group.length > 1 ? ` ×${group.length}` : ''}`;
   if (u.status === 'cancelled') return;
-  const me = await ensureStaff();
-  if (!me) return;
-  if (u.status === 'new') return enqueue('take', ids);
-  if (u.status === 'taken' && u.taken_by === me.id) return enqueue('ready', ids);
-  if (u.status === 'taken') {
-    if (await confirmBox(`Взял ${u.taken_by_name}. Отметить готовым от имени «${me.name}»?`)) enqueue('ready', ids);
+  if (u.status === 'new') {
+    const who = await pickStaff(`Кто берёт ${what}?`);
+    if (who) enqueue('take', ids, who);
     return;
   }
-  if (u.status === 'ready' && u.ready_by === me.id) {
+  if (u.status === 'taken') {
+    // Ready goes to whoever took it; asked only if they've left this screen.
+    const who = await pickStaff(`Кто приготовил ${what}?`, u.taken_by);
+    if (!who) return;
+    if (who.id !== u.taken_by && !(await confirmBox(`Взял ${u.taken_by_name}. Отметить готовым от имени «${who.name}»?`))) return;
+    enqueue('ready', ids, who);
+    return;
+  }
+  if (u.status === 'ready') {
+    const who = state.staff.find((s) => s.id === u.ready_by);
+    if (!who) return toast(`Отметку поставил(а) ${u.ready_by_name}: вернуть в работу может только он(а)`, 'info');
     const age = (Date.now() + state.serverOffset - new Date(u.ready_at)) / 1000;
     if (age > state.settings.undoWindowSec) return toast('Время на отмену вышло — обратитесь к администратору');
-    if (await confirmBox(`Вернуть «${u.name}» в работу?`)) enqueue('undo', ids);
+    if (await confirmBox(`Вернуть ${what} в работу?`)) enqueue('undo', ids, who);
   }
 }
 
+// Taken portions go to whoever took them (if they're on shift here);
+// everything else to the person picked once for the whole card.
 async function onAllReady(t) {
-  const me = await ensureStaff();
-  if (!me) return;
-  const ids = t.units.filter(isOpen).map((u) => u.id);
-  const foreign = t.units.filter((u) => u.status === 'taken' && u.taken_by !== me.id);
-  if (foreign.length && !(await confirmBox(`Часть позиций взял ${foreign[0].taken_by_name}. Отметить всё от имени «${me.name}»?`))) return;
-  if (ids.length) enqueue('ready', ids);
+  const open = t.units.filter(isOpen);
+  const byTaker = new Map();
+  const rest = [];
+  for (const u of open) {
+    const taker = u.status === 'taken' && state.staff.find((s) => s.id === u.taken_by);
+    if (taker) byTaker.set(taker, [...(byTaker.get(taker) ?? []), u.id]);
+    else rest.push(u.id);
+  }
+  if (rest.length) {
+    const who = await pickStaff(rest.length === open.length ? 'Кто приготовил?' : `Кто приготовил остальные (${rest.length})?`);
+    if (!who) return;
+    byTaker.set(who, [...(byTaker.get(who) ?? []), ...rest]);
+  }
+  for (const [who, ids] of byTaker) enqueue('ready', ids, who);
 }
 
 async function onServe(t) {
-  const me = await ensureStaff();
-  if (!me) return;
   const waiting = t.units.filter((u) => u.status !== 'ready' && u.status !== 'cancelled');
   if (waiting.length && !(await confirmBox(`Ещё не готово: ${waiting.map((u) => u.name).join(', ')}. Всё равно отметить «отдано»?`))) return;
-  enqueueOp(`/tickets/${t.id}/serve`, {});
+  const who = await pickStaff(`Кто отдаёт ${ticketTitle(t)}?`);
+  if (who) enqueueOp(`/tickets/${t.id}/serve`, {}, who);
 }
 
 // ---- side summary: how much to make in total ------------------------------------
@@ -373,10 +414,18 @@ function unitRow(group, { expo }) {
   const timer = u.status === 'taken' && u.taken_at
     ? `<span class="rtimer" data-taken="${esc(u.taken_at)}" data-norm="${u.norm_seconds ?? ''}"></span>` : '';
   if (state.filterKey && u.item_key === state.filterKey) li.classList.add('hl');
-  li.innerHTML = `<span class="box"></span><span class="name">${count}${esc(u.name)}${qty}${mod}</span>${station}${timer}<span class="who">${esc(who)}</span><button class="info" title="Рецептура">i</button>`;
+  const meta = `${who ? `<span class="who">${esc(who)}</span>` : ''}${timer}${station}`;
+  li.innerHTML = `<span class="box"></span><span class="name">${count}<span class="nm">${esc(u.name)}${qty}</span>${mod}${meta ? `<span class="umeta">${meta}</span>` : ''}</span><button class="info" title="Рецептура" aria-label="Рецептура">i</button>`;
   li.querySelector('.info').onclick = (e) => { e.stopPropagation(); openRecipe(u.product_id, group.length * Number(u.qty || 1)); };
   if (!expo) li.onclick = () => onRowTap(group);
   return li;
+}
+
+const SERVICE = { 1: 'В зале', 2: 'С собой', 3: 'Доставка' };
+const orderNo = (t) => String(Number(t.transaction_id) % 1000).padStart(3, '0');
+function ticketTitle(t) {
+  if (state.quickService) return `№ ${orderNo(t)}`;
+  return t.table_name ? `Стол ${t.table_name}` : `Чек ${t.transaction_id}`;
 }
 
 function render() {
@@ -400,9 +449,9 @@ function render() {
     else if (!open.length && !expo) card.classList.add('cancelled');
     card.innerHTML = `
       <div class="t-head">
-        <div class="t-row"><span class="table">${t.table_name ? `Стол ${esc(t.table_name)}` : 'Без стола'}${t.round > 1 ? '<span class="badge">ДОЗАКАЗ</span>' : ''}</span>
+        <div class="t-row"><span class="table">${esc(ticketTitle(t))}${t.round > 1 ? '<span class="badge">ДОЗАКАЗ</span>' : ''}${state.quickService && SERVICE[t.service_mode] ? `<span class="badge svc s${t.service_mode}">${SERVICE[t.service_mode]}</span>` : ''}</span>
           <span class="timer"></span></div>
-        <div class="meta">Чек ${t.transaction_id} · ${esc(t.waiter_name || '—')}${t.tablet_id ? ` · касса ${t.tablet_id}` : ''}${t.hall_name ? ` · ${esc(t.hall_name)}` : ''}${t.guests ? ` · гостей ${t.guests}` : ''}${t.check_status === 2 ? ' · оплачен' : ''}${expo ? ` · готово ${readyCnt}/${live.length}` : ''}</div>
+        <div class="meta">${state.quickService && t.table_name ? `стол ${esc(t.table_name)} · ` : ''}Чек ${t.transaction_id} · ${esc(t.waiter_name || '—')}${t.tablet_id ? ` · касса ${t.tablet_id}` : ''}${t.hall_name ? ` · ${esc(t.hall_name)}` : ''}${!state.quickService && t.guests ? ` · гостей ${t.guests}` : ''}${!state.quickService && t.check_status === 2 ? ' · оплачен' : ''}${expo ? ` · готово ${readyCnt}/${live.length}` : ''}</div>
       </div>
       ${t.comment ? `<div class="comment${ALERT.test(t.comment) ? ' alert' : ''}">${ALERT.test(t.comment) ? '⚠ ' : ''}${esc(t.comment)}</div>` : ''}
       <ul class="units"></ul>
@@ -435,17 +484,21 @@ function render() {
     d.className = 'done';
     const names = expo ? (t.served_by_name ?? '')
       : [...new Set(t.units.filter((u) => u.ready_by_name).map((u) => u.ready_by_name))].join(', ');
-    d.innerHTML = `<b>✓</b> ${t.table_name ? `Стол ${esc(t.table_name)}` : `Чек ${t.transaction_id}`} · ${esc(names)}`;
+    d.innerHTML = `<b>✓</b> ${esc(ticketTitle(t))} · ${esc(names)}`;
     d.onclick = async () => {
       if (expo) {
-        if (await ensureStaff() && await confirmBox(`Вернуть заказ «${t.table_name ?? t.transaction_id}» на раздачу?`)) {
-          enqueueOp(`/tickets/${t.id}/serve`, { undo: true });
-        }
+        const who = await pickStaff(`Кто возвращает ${ticketTitle(t)} на раздачу?`, t.served_by);
+        if (who && await confirmBox(`Вернуть заказ ${ticketTitle(t)} на раздачу?`)) enqueueOp(`/tickets/${t.id}/serve`, { undo: true }, who);
         return;
       }
-      const mine = t.units.filter((u) => u.status === 'ready' && u.ready_by === state.current);
-      if (!mine.length) return toast('Здесь нет ваших отметок', 'info');
-      if (await confirmBox(`Вернуть заказ «${t.table_name ?? t.transaction_id}» в работу?`)) enqueue('undo', mine.map((u) => u.id));
+      // Undo only your own marks: everyone on shift here gets theirs back.
+      const marks = new Map();
+      for (const u of t.units.filter((x) => x.status === 'ready')) {
+        const who = state.staff.find((s) => s.id === u.ready_by);
+        if (who) marks.set(who, [...(marks.get(who) ?? []), u.id]);
+      }
+      if (!marks.size) return toast('Отметки здесь поставили не те, кто сейчас на смене', 'info');
+      if (await confirmBox(`Вернуть заказ ${ticketTitle(t)} в работу?`)) for (const [who, ids] of marks) enqueue('undo', ids, who);
     };
     strip.appendChild(d);
   }

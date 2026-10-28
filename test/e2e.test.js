@@ -137,7 +137,7 @@ test('taps made without network are queued, shown as pending and delivered later
   await page.close();
 });
 
-test('a taken-by-someone-else portion asks before taking over', async () => {
+test('two people on shift: the screen asks who takes; ready goes to whoever took it', async () => {
   const v = await setupVenue();
   const page = await openScreen(v, 'Бар');
   v.fake.add(v.fake.open(), 10, 1);
@@ -145,16 +145,31 @@ test('a taken-by-someone-else portion asks before taking over', async () => {
   await page.waitForSelector('.ticket .unit');
   await page.click('#addStaff');
   await pin(page, '1111');
-  await page.click('.ticket .unit');
-  await page.waitForSelector('.unit.taken');
   await page.click('#addStaff');
-  await pin(page, '2222');                         // Пётр is now the active person
-  await page.click('.unit.taken');
-  await page.waitForSelector('#confirm:not(.hidden)');
-  assert.match(await page.textContent('#confirmText'), /Взял Иван/);
-  await page.click('#confirmYes');
+  await pin(page, '2222');                         // Иван and Пётр on shift
+  await page.click('.ticket .unit');
+  await page.waitForSelector('#picker:not(.hidden)');
+  assert.match(await page.textContent('#pickTitle'), /Кто берёт/);
+  await page.click('#pickGrid button:has-text("Иван")');
+  await page.waitForSelector('.unit.taken');
+  await page.click('.unit.taken');                 // no question: Иван took it, Иван is here
   await pollUntil(async () => (await s.db.query(
-    `SELECT e.name FROM units u JOIN employees e ON e.id = u.ready_by WHERE u.account_id = $1`, [v.acc.id])).rows[0]?.name === 'Пётр');
+    `SELECT e.name FROM units u JOIN employees e ON e.id = u.ready_by WHERE u.account_id = $1`, [v.acc.id])).rows[0]?.name === 'Иван');
+  assert.ok(await page.locator('#picker.hidden').count());
+  await page.close();
+});
+
+test('fast food: order number and takeaway badge instead of a table', async () => {
+  const v = await setupVenue();
+  await v.admin('/api/admin/settings', { method: 'PUT', body: { quick_service: true } });
+  const page = await openScreen(v, 'Бар');
+  const id = v.fake.open({ table: '' });
+  v.fake.transactions.get(String(id)).service_mode = '2';
+  v.fake.add(id, 10, 1);
+  v.fake.close(id);
+  await v.engine.pollOpen();
+  await page.waitForSelector('.ticket');
+  assert.equal((await page.textContent('.ticket .table')).replace(/\s+/g, ' ').trim(), `№ ${String(id % 1000).padStart(3, '0')}С собой`);
   await page.close();
 });
 

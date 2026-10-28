@@ -411,3 +411,16 @@ test('Poster cooking time is the default norm; the venue time zone is stored', a
   const { rows } = await db.query(`SELECT value FROM settings WHERE account_id = $1 AND key = 'timezone'`, [v.accountId]);
   assert.equal(rows[0].value, 'Asia/Yekaterinburg');
 });
+
+test('venue currency comes from Poster, whatever shape its settings use', async () => {
+  v.fake.settings.currency = { currency_id: '2', currency_symbol: '€', currency_code_iso: 'eur' };
+  await v.engine.syncCatalog();
+  const get = async () => (await db.query(`SELECT value FROM settings WHERE account_id = $1 AND key = 'currency'`, [v.accountId])).rows[0]?.value;
+  assert.equal(await get(), 'EUR');
+  v.fake.settings.currency = 'UAH';
+  await v.engine.syncCatalog();
+  assert.equal(await get(), 'UAH');
+  v.fake.settings.currency = { currency_symbol: '₴' }; // no code: keep what we had
+  await v.engine.syncCatalog();
+  assert.equal(await get(), 'UAH');
+});

@@ -1,7 +1,7 @@
 // Keeps the screen's shell available if the page is reloaded while Wi-Fi is down.
 // API calls are never cached: live data always comes from the server.
-const CACHE = 'kds-shell-v1';
-const SHELL = ['/kds/', '/kds/kds.js', '/kds/kds.css', '/manifest.json', '/icon.svg', '/socket.io/socket.io.js'];
+const CACHE = 'kds-shell-v2';
+const SHELL = ['/kds/', '/kds/kds.js', '/kds/kds.css', '/manifest.json', '/icon.svg', '/icon-192.png', '/apple-touch-icon.png', '/socket.io/socket.io.js'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

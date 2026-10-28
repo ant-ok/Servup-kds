@@ -80,9 +80,10 @@ export class FakePoster {
 
   // --- adapter interface used by SyncEngine ---
   clone = (v) => JSON.parse(JSON.stringify(v));
-  async getTransactions({ status = 0 }) {
+  async getTransactions({ status = 0, light = false }) {
     const list = this.clone([...this.transactions.values()].filter((t) => !status || Number(t.status) === status));
-    if (!this.listHistory) list.forEach((t) => delete t.history);
+    if (!this.listHistory || light) list.forEach((t) => delete t.history);
+    if (light) list.forEach((t) => delete t.products);
     return list;
   }
   async getSettings() { return this.clone(this.settings); }

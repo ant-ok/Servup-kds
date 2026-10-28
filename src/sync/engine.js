@@ -13,6 +13,15 @@ import { reconcileTransaction, stationResolver } from './reconcile.js';
 export const isTimeZone = (tz) => {
   try { new Intl.DateTimeFormat('en', { timeZone: tz }); return true; } catch { return false; }
 };
+// settings.getAllSettings → currency: an object (the ISO field's name differs between
+// Poster versions) or a bare code. Anything that isn't a 3-letter code is ignored.
+export function currencyCode(c) {
+  const v = typeof c === 'string' ? c : c && (c.currency_code_iso ?? c.code_iso ?? c.iso_code ?? c.currency_code ?? c.code);
+  const code = String(v ?? '').trim().toUpperCase();
+  return /^[A-Z]{3}$/.test(code) ? code : null;
+}
+export const venueCurrency = (settings) => currencyCode(settings.currency) ?? config.currency;
+
 export const venueTimeZone = (settings) => (settings.timezone && isTimeZone(settings.timezone) ? settings.timezone : config.timezone);
 
 // Syncs one venue.
@@ -103,13 +112,16 @@ export class SyncEngine extends EventEmitter {
       this.poster.getSettings?.().catch(() => null) ?? null,
     ]);
     // The venue's own time zone (settings.getAllSettings → timezones) drives
-    // business days in reports; venues can be in different cities.
+    // business days in reports; venues can be in different cities and countries,
+    // so the currency comes from Poster too.
     const tz = posterSettings?.timezones;
-    if (tz && isTimeZone(tz)) {
+    const venue = { timezone: tz && isTimeZone(tz) ? tz : null, currency: currencyCode(posterSettings?.currency) };
+    for (const [key, value] of Object.entries(venue)) {
+      if (!value) continue;
       await query(
-        `INSERT INTO settings (account_id, key, value) VALUES ($1, 'timezone', $2)
+        `INSERT INTO settings (account_id, key, value) VALUES ($1, $2, $3)
          ON CONFLICT (account_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()`,
-        [this.accountId, JSON.stringify(tz)]);
+        [this.accountId, key, JSON.stringify(value)]);
     }
     await tx(async (c) => {
       for (const raw of products) {
@@ -185,6 +197,20 @@ export class SyncEngine extends EventEmitter {
     const list = await this.poster.getTransactions({ ...this.window(), status: 1 });
     await this.applyList(list);
     await this.recheckMissing(list);
+    // Fast food: a check is paid and closed seconds after it's opened, so it may
+    // never show up as open. Ask for the closed ones too, but only their ids,
+    // and fetch in full just the ones we have never seen.
+    if ((await getSettings(this.accountId)).quick_service === true) {
+      const closed = await this.poster.getTransactions({ ...this.window(), status: 2, light: true });
+      const ids = closed.map((t) => Number(t.transaction_id ?? t.id)).filter(Boolean);
+      if (ids.length) {
+        const known = new Set((await query(
+          'SELECT poster_transaction_id AS id FROM transactions WHERE account_id = $1 AND poster_transaction_id = ANY($2)',
+          [this.accountId, ids])).rows.map((r) => Number(r.id)));
+        for (const id of ids) if (!known.has(id)) this.enqueue(id);
+        await this.idle();
+      }
+    }
     this.health.lastPollOkAt = new Date().toISOString();
     this.emit('health', this.getHealth());
   }

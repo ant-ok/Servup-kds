@@ -173,10 +173,10 @@ export async function anomalies(q) {
 export const REPORTS = { makers, sellers, runners, stations, products, details, anomalies };
 
 // CSV for Excel in Russian locale: ';' separator and a BOM so Cyrillic opens correctly.
-export function toCsv(rows, columns) {
+export function toCsv(rows, columns, timeZone = config.timezone) {
   const esc = (v) => {
     if (v === null || v === undefined) return '';
-    if (v instanceof Date) v = v.toLocaleString('ru-RU', { timeZone: config.timezone });
+    if (v instanceof Date) v = v.toLocaleString('ru-RU', { timeZone });
     const s = typeof v === 'number' ? String(v).replace('.', ',') : String(v);
     return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };

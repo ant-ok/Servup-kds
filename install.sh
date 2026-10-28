@@ -5,6 +5,9 @@
 #   Cloud server, temporary domain:    sudo ./install.sh            → https://<ip>.sslip.io
 #   Mini-PC inside the venue (LAN):    sudo MODE=local ./install.sh → http://<lan-ip>/
 #
+# First venue in the same command (all optional):
+#   sudo POSTER_TOKEN=… POSTER_ACCOUNT=myburger VENUE_TYPE=fastfood ./install.sh
+#
 # Run it again any time to update: data and secrets are kept.
 set -euo pipefail
 
@@ -55,6 +58,15 @@ if [ ! -f .env ]; then
 fi
 setenv PUBLIC_URL "$URL"
 setenv DOMAIN "$DOMAIN"
+# Values given on the command line go into .env; nothing is erased if omitted.
+for KEY in POSTER_TOKEN POSTER_ACCOUNT VENUE_TYPE ADMIN_PASSWORD TELEGRAM_BOT_TOKEN; do
+  if [ -n "${!KEY:-}" ]; then setenv "$KEY" "${!KEY}"; fi
+done
+if grep -q '^POSTER_TOKEN=.' .env && ! grep -q '^ADMIN_PASSWORD=.' .env; then
+  ADMIN_PASSWORD="$(openssl rand -base64 9 | tr -d '/+=')"
+  setenv ADMIN_PASSWORD "$ADMIN_PASSWORD"
+  NEW_ADMIN=1
+fi
 chmod 600 .env
 
 mkdir -p backups
@@ -73,6 +85,10 @@ echo "  Экран:      $URL/kds/"
 echo "  Админка:    $URL/admin/"
 echo "  Платформа:  $URL/platform/"
 [ -n "${NEW_INSTALL:-}" ] && echo "  Пароль платформы: $PLATFORM_PASSWORD  (сохраните, он есть в $DIR/.env)"
+if [ -n "${NEW_ADMIN:-}" ]; then
+  LOGIN="$(grep '^POSTER_ACCOUNT=' .env | cut -d= -f2-)"
+  echo "  Вход в админку: заведение «${LOGIN:-1}», пароль $ADMIN_PASSWORD"
+fi
 echo "  Токены Poster и Telegram впишите в $DIR/.env и выполните: sudo ./install.sh"
 if [ "$MODE" = "local" ]; then
   echo "  Локальный режим: планшеты должны быть в той же сети. Закрепите за сервером IP ${LAN_IP} в роутере."
