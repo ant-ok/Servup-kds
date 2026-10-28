@@ -422,6 +422,13 @@ function unitRow(group, { expo }) {
 }
 
 const SERVICE = { 1: 'В зале', 2: 'С собой', 3: 'Доставка' };
+// Delivery-service badge in its brand colour; dark or light text by brightness.
+function aggBadge(a) {
+  if (!a || !/^#[0-9a-f]{6}$/i.test(a.color)) return '';
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(a.color.slice(i, i + 2), 16));
+  const ink = 0.299 * r + 0.587 * g + 0.114 * b > 150 ? '#0A0D12' : '#FFFFFF';
+  return `<span class="badge agg" style="background:${a.color};border-color:${a.color};color:${ink}">${esc(a.name)}</span>`;
+}
 const orderNo = (t) => String(Number(t.transaction_id) % 1000).padStart(3, '0');
 function ticketTitle(t) {
   if (state.quickService) return `№ ${orderNo(t)}`;
@@ -449,7 +456,7 @@ function render() {
     else if (!open.length && !expo) card.classList.add('cancelled');
     card.innerHTML = `
       <div class="t-head">
-        <div class="t-row"><span class="table">${esc(ticketTitle(t))}${t.round > 1 ? '<span class="badge">ДОЗАКАЗ</span>' : ''}${state.quickService && SERVICE[t.service_mode] ? `<span class="badge svc s${t.service_mode}">${SERVICE[t.service_mode]}</span>` : ''}</span>
+        <div class="t-row"><span class="table">${esc(ticketTitle(t))}${t.round > 1 ? '<span class="badge">ДОЗАКАЗ</span>' : ''}${aggBadge(t.aggregator)}${state.quickService && SERVICE[t.service_mode] && !t.aggregator ? `<span class="badge svc s${t.service_mode}">${SERVICE[t.service_mode]}</span>` : ''}</span>
           <span class="timer"></span></div>
         <div class="meta">${state.quickService && t.table_name ? `стол ${esc(t.table_name)} · ` : ''}Чек ${t.transaction_id} · ${esc(t.waiter_name || '—')}${t.tablet_id ? ` · касса ${t.tablet_id}` : ''}${t.hall_name ? ` · ${esc(t.hall_name)}` : ''}${!state.quickService && t.guests ? ` · гостей ${t.guests}` : ''}${!state.quickService && t.check_status === 2 ? ' · оплачен' : ''}${expo ? ` · готово ${readyCnt}/${live.length}` : ''}</div>
       </div>
@@ -484,7 +491,7 @@ function render() {
     d.className = 'done';
     const names = expo ? (t.served_by_name ?? '')
       : [...new Set(t.units.filter((u) => u.ready_by_name).map((u) => u.ready_by_name))].join(', ');
-    d.innerHTML = `<b>✓</b> ${esc(ticketTitle(t))} · ${esc(names)}`;
+    d.innerHTML = `<b>✓</b> ${esc(ticketTitle(t))}${t.aggregator ? ` · ${esc(t.aggregator.name)}` : ''} · ${esc(names)}`;
     d.onclick = async () => {
       if (expo) {
         const who = await pickStaff(`Кто возвращает ${ticketTitle(t)} на раздачу?`, t.served_by);

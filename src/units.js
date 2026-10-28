@@ -152,10 +152,31 @@ export async function dismissTicket(ticketId, device) {
   });
 }
 
+// Delivery services (Wolt, Bolt Food…) reach Poster through integrations that leave
+// no "source" field on the check, only traces: the comment ("Wolt #A1B2"), the
+// employee the integration rings orders under, the client's name, the hall or table.
+// The venue lists the words to look for; the first rule that matches tags the order.
+export const DEFAULT_AGGREGATORS = [
+  { name: 'Wolt', match: 'wolt', color: '#009DE0' },
+  { name: 'Bolt Food', match: 'bolt', color: '#34D186' },
+  { name: 'Foodora', match: 'foodora', color: '#DF1B6F' },
+];
+export const aggregatorRules = (settings) => (Array.isArray(settings.aggregators) ? settings.aggregators : DEFAULT_AGGREGATORS);
+export function aggregatorOf(t, rules) {
+  const hay = [t.comment, t.waiter_name, t.table_name, t.hall_name, t.client_name].filter(Boolean).join(' ').toLowerCase();
+  if (!hay) return null;
+  for (const r of rules) {
+    const words = String(r.match ?? '').split(',').map((w) => w.trim().toLowerCase()).filter(Boolean);
+    if (words.some((w) => hay.includes(w))) return { name: r.name, color: r.color };
+  }
+  return null;
+}
+const CLIENT_NAME = `NULLIF(trim(concat_ws(' ', t.raw->>'client_firstname', t.raw->>'client_lastname', t.raw->>'client_name')), '') AS client_name`;
+
 const TICKET_FIELDS = `tk.id, tk.round, tk.created_at, tk.served_at, tk.served_by, sb.name AS served_by_name,
   t.poster_transaction_id AS transaction_id, t.table_name, t.hall_name, t.waiter_name, t.guests, t.comment,
   t.status AS check_status, t.tablet_id,
-  CASE WHEN t.raw->>'service_mode' ~ '^[0-9]+$' THEN (t.raw->>'service_mode')::int END AS service_mode`;
+  CASE WHEN t.raw->>'service_mode' ~ '^[0-9]+$' THEN (t.raw->>'service_mode')::int END AS service_mode, ${CLIENT_NAME}`;
 
 async function unitsFor(ticketIds, stationId) {
   if (!ticketIds.length) return [];
@@ -217,18 +238,19 @@ export async function getExpoBoard(accountId) {
 export async function getPickupBoard(accountId) {
   const s = await getSettings(accountId);
   const { rows } = await query(
-    `SELECT t.poster_transaction_id AS transaction_id, tk.created_at,
-            bool_and(u.status = 'ready') AS ready, max(u.ready_at) AS ready_at
+    `SELECT t.poster_transaction_id AS transaction_id, tk.created_at, t.comment, t.waiter_name, t.table_name, t.hall_name,
+            ${CLIENT_NAME}, bool_and(u.status = 'ready') AS ready, max(u.ready_at) AS ready_at
      FROM tickets tk JOIN transactions t ON t.id = tk.transaction_id
      JOIN units u ON u.ticket_id = tk.id AND u.status <> 'cancelled'
      WHERE tk.account_id = $1 AND tk.served_at IS NULL AND tk.created_at > now() - interval '3 hours'
-     GROUP BY t.poster_transaction_id, tk.id, tk.created_at
+     GROUP BY t.id, tk.id
      ORDER BY tk.created_at`, [accountId]);
   const keep = Number(s.pickup_minutes ?? 10) * 60e3;
   const byCheck = new Map();
   // A check with several rounds is ready only when every round is.
   for (const r of rows) {
-    const c = byCheck.get(r.transaction_id) ?? { number: orderNumber(r.transaction_id), ready: true, readyAt: null };
+    const c = byCheck.get(r.transaction_id)
+      ?? { number: orderNumber(r.transaction_id), ready: true, readyAt: null, aggregator: aggregatorOf(r, aggregatorRules(s)) };
     c.ready &&= r.ready;
     if (r.ready_at && (!c.readyAt || r.ready_at > c.readyAt)) c.readyAt = r.ready_at;
     byCheck.set(r.transaction_id, c);
@@ -237,6 +259,8 @@ export async function getPickupBoard(accountId) {
   return {
     preparing: all.filter((c) => !c.ready).map((c) => c.number),
     ready: all.filter((c) => c.ready).sort((a, b) => new Date(b.readyAt) - new Date(a.readyAt)).map((c) => c.number),
+    // number → delivery service, so couriers find their orders on the TV
+    tags: Object.fromEntries(all.filter((c) => c.aggregator).map((c) => [c.number, c.aggregator])),
   };
 }
 
@@ -250,6 +274,8 @@ export async function getBoard(device) {
   const tickets = station?.kind === 'expo'
     ? await getExpoBoard(device.account_id)
     : await getPrepBoard(device.account_id, station?.id ?? null);
-  const quickService = (await getSettings(device.account_id)).quick_service === true;
+  const settings = await getSettings(device.account_id);
+  const quickService = settings.quick_service === true;
+  for (const t of tickets) t.aggregator = aggregatorOf(t, aggregatorRules(settings));
   return { station: station ?? { id: null, name: 'Все станции', kind: 'prep', group_items: false }, tickets, quickService };
 }

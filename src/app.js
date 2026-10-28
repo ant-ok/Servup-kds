@@ -11,7 +11,7 @@ import {
   newPairCode, pairAttemptAllowed, pairFailed,
 } from './auth.js';
 import { orderStatus } from './pos.js';
-import { applyAction, serveTicket, startSession, endSession, dismissTicket, getBoard, getPickupBoard, ActionError } from './units.js';
+import { applyAction, serveTicket, startSession, endSession, dismissTicket, getBoard, getPickupBoard, aggregatorRules, ActionError } from './units.js';
 import { REPORTS, toCsv } from './reports.js';
 import { getSummary, getRecipe, suggestNorms } from './kitchen.js';
 import { createLinkCode } from './alerts.js';
@@ -365,10 +365,28 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode, e
   });
 
   const EDITABLE = ['credit_made_then_removed', 'warn_minutes', 'critical_minutes', 'ready_visible_seconds', 'day_start_hour', 'maker_title',
-    'release_mode', 'quick_service', 'pickup_minutes'];
-  const withVenue = (s) => ({ ...s, currency: venueCurrency(s), timezone: venueTimeZone(s) });
+    'release_mode', 'quick_service', 'pickup_minutes', 'aggregators'];
+  const withVenue = (s) => ({ ...s, currency: venueCurrency(s), timezone: venueTimeZone(s), aggregators: aggregatorRules(s) });
+  // Delivery-service rules from the admin: name, words to look for, badge colour.
+  function cleanAggregators(list) {
+    if (!Array.isArray(list) || list.length > 12) return null;
+    const out = [];
+    for (const r of list) {
+      const name = String(r?.name ?? '').trim().slice(0, 30);
+      const match = String(r?.match ?? '').trim().slice(0, 200);
+      const color = String(r?.color ?? '');
+      if (!name || !match || !/^#[0-9a-f]{6}$/i.test(color)) return null;
+      out.push({ name, match, color });
+    }
+    return out;
+  }
   admin.get('/settings', async (req, res) => res.json(withVenue(await getSettings(A(req)))));
   admin.put('/settings', async (req, res) => {
+    if (req.body?.aggregators !== undefined) {
+      const clean = cleanAggregators(req.body.aggregators);
+      if (!clean) return res.status(400).json({ error: 'Агрегатор: нужны название, слова для поиска и цвет вида #00AAFF' });
+      req.body.aggregators = clean;
+    }
     await tx(async (c) => {
       for (const k of EDITABLE) {
         if (req.body?.[k] === undefined) continue;

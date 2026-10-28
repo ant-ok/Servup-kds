@@ -173,6 +173,17 @@ test('fast food: order number and takeaway badge instead of a table', async () =
   await page.close();
 });
 
+test('a Wolt order carries a Wolt badge on the card', async () => {
+  const v = await setupVenue();
+  const page = await openScreen(v, 'Бар');
+  v.fake.add(v.fake.open({ comment: 'Wolt #K7' }), 10, 1);
+  await v.engine.pollOpen();
+  await page.waitForSelector('.ticket .badge.agg');
+  assert.equal(await page.textContent('.ticket .badge.agg'), 'Wolt');
+  assert.deepEqual(page.errors, []);
+  await page.close();
+});
+
 test('summary panel counts portions and ingredients; tapping a row highlights its orders; recipe opens', async () => {
   const v = await setupVenue();
   const page = await openScreen(v, 'Бар');

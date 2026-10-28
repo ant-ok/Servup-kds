@@ -353,6 +353,38 @@ test('fast food: a check paid at once reaches the kitchen on the fast poll; orde
   assert.equal((await guests('/pickup/')).status, 200);
 });
 
+test('delivery services: badge on the kitchen card and on the pickup TV; rules are validated', async () => {
+  const v = await s.venue({ preset: 'fastfood' });
+  const kitchen = await screen(v, 'Кухня');
+  const wolt = v.fake.open({ table: '', comment: 'Wolt #A12B' });
+  v.fake.add(wolt, 20, 1);
+  const bolt = v.fake.open({ table: '' });
+  v.fake.transactions.get(String(bolt)).client_firstname = 'Bolt';
+  v.fake.transactions.get(String(bolt)).client_lastname = 'Food';
+  v.fake.add(bolt, 20, 1);
+  const hall = v.fake.open({ table: '4' });
+  v.fake.add(hall, 20, 1);
+  await v.engine.pollOpen();
+  const tag = (id, b) => b.tickets.find((t) => t.transaction_id === id)?.aggregator?.name ?? null;
+  let board = (await kitchen.kds('/api/kds/board')).data;
+  assert.deepEqual([tag(wolt, board), tag(bolt, board), tag(hall, board)], ['Wolt', 'Bolt Food', null]);
+
+  const token = (await v.admin('/api/admin/pickup')).data.token;
+  const tv = (await s.client()(`/api/pickup/${token}`)).data;
+  assert.equal(tv.tags[String(wolt % 1000).padStart(3, '0')].name, 'Wolt');
+  assert.equal(Object.keys(tv.tags).length, 2);
+
+  assert.equal((await v.admin('/api/admin/settings')).data.aggregators.length, 3, 'defaults are shown in the admin');
+  assert.equal((await v.admin('/api/admin/settings', { method: 'PUT', body: { aggregators: [{ name: 'X', match: 'x', color: 'red' }] } })).status, 400);
+  assert.equal((await v.admin('/api/admin/settings', { method: 'PUT', body: { aggregators: [{ name: '', match: 'x', color: '#000000' }] } })).status, 400);
+  await v.admin('/api/admin/settings', { method: 'PUT', body: { aggregators: [{ name: 'Своя доставка', match: 'bolt', color: '#123456' }] } });
+  board = (await kitchen.kds('/api/kds/board')).data;
+  assert.deepEqual([tag(wolt, board), tag(bolt, board)], [null, 'Своя доставка']);
+  await v.admin('/api/admin/settings', { method: 'PUT', body: { aggregators: [] } });
+  board = (await kitchen.kds('/api/kds/board')).data;
+  assert.equal(board.tickets.filter((t) => t.aggregator).length, 0, 'an empty list switches badges off');
+});
+
 test('the fast poll stays light: open checks, and in fast food closed check ids only', async () => {
   const v = await s.venue({ preset: 'restaurant' });
   const calls = [];

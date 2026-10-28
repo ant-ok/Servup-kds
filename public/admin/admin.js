@@ -412,6 +412,36 @@ async function pickupCard() {
   return c;
 }
 
+// Delivery services: how to recognise their orders and the badge colour.
+function aggregatorsCard(list) {
+  const c = card('Агрегаторы доставки');
+  c.insertAdjacentHTML('beforeend', `<p class="muted">Заказы Wolt, Bolt Food и других приходят в Poster через интеграции. На экране кухни и на телевизоре выдачи
+    они отмечаются цветной меткой, чтобы курьер сразу нашёл свой заказ. Метка ставится, если слово встречается в комментарии к чеку,
+    имени сотрудника, от которого пришёл заказ, имени клиента, зале или столе. Несколько слов — через запятую.</p>
+    <div id="aggRows"></div>
+    <p><button class="light small" id="aggAdd">+ Агрегатор</button> <button id="aggSave">Сохранить</button></p>`);
+  const rows = c.querySelector('#aggRows');
+  const row = (a = { name: '', match: '', color: '#4C8DFF' }) => {
+    const d = document.createElement('div');
+    d.className = 'kv';
+    d.style.gridTemplateColumns = 'minmax(0,1fr) minmax(0,2fr) auto auto';
+    d.style.marginBottom = '6px';
+    d.innerHTML = `<input data-f="name" placeholder="Название" value="${esc(a.name)}"><input data-f="match" placeholder="слова для поиска: wolt" value="${esc(a.match)}">
+      <input data-f="color" type="color" value="${esc(a.color)}" style="width:48px;padding:2px"><button class="danger small" title="Убрать">✕</button>`;
+    d.querySelector('button').onclick = () => d.remove();
+    rows.appendChild(d);
+  };
+  list.forEach(row);
+  c.querySelector('#aggAdd').onclick = () => row();
+  c.querySelector('#aggSave').onclick = run(async () => {
+    const aggregators = [...rows.children].map((d) => Object.fromEntries([...d.querySelectorAll('[data-f]')].map((i) => [i.dataset.f, i.value.trim()])))
+      .filter((a) => a.name || a.match);
+    await api('/settings', { method: 'PUT', body: { aggregators } });
+    toast('Сохранено');
+  });
+  return c;
+}
+
 // ---- settings ------------------------------------------------------------------------------
 views.settings = async () => {
   const [st, acc] = await Promise.all([api('/settings'), api('/account')]);
@@ -452,6 +482,7 @@ views.settings = async () => {
     toast('Сохранено');
     checkBanner();
   });
+  view.appendChild(aggregatorsCard(st.aggregators ?? []));
   view.appendChild(await telegramCard());
 };
 

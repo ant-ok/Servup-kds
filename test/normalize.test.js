@@ -183,3 +183,15 @@ test('currency code and venue fallbacks', async () => {
   const csv = toCsv([{ at: new Date('2026-07-01T21:30:00Z') }], [['at', 'Время']], 'Europe/Tallinn');
   assert.match(csv, /02\.07\.2026, 00:30/);
 });
+
+test('delivery services are recognised by comment, employee or client; the first rule wins', async () => {
+  const { aggregatorOf, DEFAULT_AGGREGATORS } = await import('../src/units.js');
+  assert.equal(aggregatorOf({ comment: 'WOLT #A12B, без лука' }, DEFAULT_AGGREGATORS).name, 'Wolt');
+  assert.equal(aggregatorOf({ waiter_name: 'Bolt Food' }, DEFAULT_AGGREGATORS).name, 'Bolt Food');
+  assert.equal(aggregatorOf({ client_name: 'Foodora Courier' }, DEFAULT_AGGREGATORS).color, '#DF1B6F');
+  assert.equal(aggregatorOf({ comment: 'Аллергия на орехи', table_name: '5' }, DEFAULT_AGGREGATORS), null);
+  assert.equal(aggregatorOf({}, DEFAULT_AGGREGATORS), null);
+  const rules = [{ name: 'Своя доставка', match: 'доставка, курьер', color: '#111111' }, { name: 'Wolt', match: 'wolt', color: '#009DE0' }];
+  assert.equal(aggregatorOf({ comment: 'Курьер Wolt' }, rules).name, 'Своя доставка');
+  assert.equal(aggregatorOf({ comment: 'wolt' }, []), null, 'rules switched off');
+});
