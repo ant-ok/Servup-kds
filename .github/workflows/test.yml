@@ -52,6 +52,7 @@ jobs:
       - name: Start mock Poster and the Docker stack (local mode)
         run: |
           node test/mock-poster.js &
+          mkdir -p backups   # as install.sh does; otherwise docker creates it owned by root
           cp .env.example .env
           sed -i 's#^APP_SECRET=.*#APP_SECRET=ci-secret-123#; s#^PLATFORM_PASSWORD=.*#PLATFORM_PASSWORD=platform-pass#; s#^DB_PASSWORD=.*#DB_PASSWORD=ci-db#; s#^PUBLIC_URL=.*#PUBLIC_URL=http://localhost#' .env
           echo "POSTER_API_URL=http://host.docker.internal:4100/api" >> .env

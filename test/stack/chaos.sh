@@ -86,11 +86,11 @@ ready_after="$(docker compose exec -T db psql -U kds -tAc "SELECT count(*) FROM 
 c5="$(order 2)"; wait_units "$c5" 2 30 && ok "новые заказы идут" || bad "новый заказ не дошёл"
 
 echo "6. Резервная копия и восстановление"
-docker compose exec -T db pg_dump -U kds kds | gzip > backups/chaos_check.sql.gz
-size="$(stat -c %s backups/chaos_check.sql.gz)"
+docker compose exec -T db pg_dump -U kds kds | gzip > "$J/chaos_check.sql.gz"
+size="$(stat -c %s "$J/chaos_check.sql.gz" 2>/dev/null || echo 0)"
 [ "$size" -gt 1000 ] && ok "копия базы снимается ($size байт)" || bad "копия пустая"
 count="$(docker compose exec -T db psql -U kds -tAc 'SELECT count(*) FROM units')"
-./scripts/restore.sh backups/chaos_check.sql.gz >/dev/null 2>&1
+./scripts/restore.sh "$J/chaos_check.sql.gz" >/dev/null 2>&1
 health_up 60 >/dev/null
 restored="$(docker compose exec -T db psql -U kds -tAc 'SELECT count(*) FROM units')"
 [ "$count" = "$restored" ] && ok "восстановление из копии: $restored порций" || bad "после восстановления $restored вместо $count"
