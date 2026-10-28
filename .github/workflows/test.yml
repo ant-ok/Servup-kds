@@ -62,6 +62,6 @@ jobs:
           YAML
           docker compose up -d --build --wait
       - name: Chaos test
-        run: ./test/stack/chaos.sh
+        run: bash test/stack/chaos.sh
       - if: failure()
         run: docker compose logs --tail 200
