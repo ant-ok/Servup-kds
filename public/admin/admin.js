@@ -5,7 +5,8 @@ const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<
 let currency = null;
 const money = (v) => Number(v ?? 0).toLocaleString('ru-RU', currency
   ? { style: 'currency', currency, minimumFractionDigits: 2, maximumFractionDigits: 2 } : { maximumFractionDigits: 2 });
-const dur = (s) => (s == null ? '—' : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`);
+// A negative duration can only come from clocks out of step: show a dash, not "-3:-12".
+const dur = (s) => (s == null || s < 0 ? '—' : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`);
 const dt = (v) => (v ? new Date(v).toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—');
 
 async function api(path, { method = 'GET', body } = {}) {
