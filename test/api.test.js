@@ -437,7 +437,7 @@ test('health: OK with version and venue counts', async () => {
 
 test('static pages are served', async () => {
   const c = s.client();
-  for (const path of ['/', '/kds/', '/admin/', '/platform/', '/manifest.json', '/sw.js', '/kds/kds.js', '/socket.io/socket.io.js']) {
+  for (const path of ['/', '/kds/', '/admin/', '/platform/', '/demo/', '/manifest.json', '/sw.js', '/kds/kds.js', '/socket.io/socket.io.js']) {
     assert.equal((await c(path, { raw: true })).status, 200, path);
   }
 });

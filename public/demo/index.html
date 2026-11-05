@@ -1,0 +1,1084 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>KDS для Poster — демо</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geologica:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap">
+<style>
+/* Layout: an instrument panel. One top bar (mark · screens · demo menu), then the working
+   surface. Colour carries state only: blue = in work / selected, green = ready, amber/red = late.
+   Committed dark look: kitchen screens are dark. */
+:root {
+  --bg: #0A0D12;
+  --surface: #121720;
+  --surface-2: #19202B;
+  --line: #242C39;
+  --fg: #E9EDF3;
+  --muted: #7F8A9C;
+  --accent: #4C8DFF;
+  --accent-ink: #06142E;
+  --ok: #2EBD72;
+  --ok-ink: #04210F;
+  --warn: #E6A825;
+  --crit: #F04D4D;
+  --f-ui: "Geologica", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { min-height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 var(--f-ui);
+  background-image: radial-gradient(color-mix(in srgb, var(--fg) 5%, transparent) 1px, transparent 1px);
+  background-size: 24px 24px; background-attachment: fixed;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 32px;
+}
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 10; background: var(--bg); }
+button { font: inherit; color: inherit; border: 0; cursor: pointer; background: none; }
+button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+select, input { font: inherit; color: var(--fg); background: var(--surface-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+h1, h2, h3 { text-wrap: balance; margin: 0; font-weight: 600; }
+.num, .timer, .rt { font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+.label { font: 500 11px var(--f-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+
+/* ---- top bar ---- */
+.rail { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5; background: color-mix(in srgb, var(--bg) 92%, transparent);
+  backdrop-filter: blur(8px); border-bottom: 1px solid var(--line);
+  margin-inline: calc(-1 * max(16px, env(safe-area-inset-left, 0px))); padding: 0 max(16px, env(safe-area-inset-right, 0px)) 0 max(16px, env(safe-area-inset-left, 0px)); }
+.rail-in { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 14px 20px; min-height: 56px; }
+.mark { display: flex; align-items: baseline; gap: 8px; font: 700 17px var(--f-mono); letter-spacing: .04em; }
+.mark small { font: 400 13px var(--f-ui); letter-spacing: 0; color: var(--muted); }
+.live { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); align-self: center; box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 60%, transparent); animation: pulse 2.4s infinite; }
+@keyframes pulse { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 55%, transparent); } 70%, 100% { box-shadow: 0 0 0 7px transparent; } }
+.tabs { display: flex; gap: 4px; overflow-x: auto; scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
+.tab { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-radius: 8px; color: var(--muted); text-decoration: none; white-space: nowrap; font-weight: 500; }
+.tab:hover { color: var(--fg); background: var(--surface); }
+.tab[aria-current="page"] { color: var(--fg); background: var(--surface-2); }
+.tab .count { font: 600 11px var(--f-mono); min-width: 20px; text-align: center; padding: 1px 6px; border-radius: 99px; background: var(--line); color: var(--fg); }
+.tab .count.hot { background: var(--crit); color: #fff; }
+.demo { position: relative; }
+.demo summary { list-style: none; cursor: pointer; padding: 7px 12px; border-radius: 8px; border: 1px solid var(--line); color: var(--muted); font-size: 13px; }
+.demo summary::-webkit-details-marker { display: none; }
+.demo[open] summary, .demo summary:hover { color: var(--fg); border-color: var(--muted); }
+.demo-pop { position: absolute; right: 0; top: calc(100% + 8px); width: 250px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 8px; display: grid; gap: 2px; box-shadow: 0 16px 40px rgba(0, 0, 0, .45); }
+.toggle { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px; font-size: 14px; }
+.switch { width: 36px; height: 20px; border-radius: 99px; background: var(--line); position: relative; flex: none; }
+.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--muted); transition: transform .15s; }
+.switch[aria-pressed="true"] { background: var(--accent); }
+.switch[aria-pressed="true"]::after { transform: translateX(16px); background: #fff; }
+.ghost { text-align: left; padding: 8px; border-radius: 8px; color: var(--muted); font-size: 14px; }
+.ghost:hover { color: var(--fg); background: var(--surface-2); }
+
+.hint { position: relative; margin: 16px 0 0; padding-left: 26px; color: var(--muted); font-size: 13px; max-width: 80ch; }
+.hint::before { content: "i"; position: absolute; left: 0; top: 0; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--line); display: grid; place-items: center; font: 600 11px var(--f-mono); }
+.hint b { color: var(--fg); font-weight: 500; }
+.view { margin-top: 18px; }
+
+/* ---- station header ---- */
+.st-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+.st-head h1 { font-size: 24px; letter-spacing: -.01em; }
+.status-dot { display: inline-flex; align-items: center; gap: 6px; font: 500 11px var(--f-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.status-dot::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--ok); }
+.spacer { flex: 1; }
+.chip-label { font: 500 11px var(--f-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { padding: 6px 12px; border-radius: 99px; border: 1px dashed var(--line); color: var(--muted); font-weight: 500; font-size: 14px; }
+.chip[aria-pressed="true"] { border: 1px solid color-mix(in srgb, var(--accent) 70%, transparent); background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--fg); }
+.sum-btn { padding: 6px 12px; border-radius: 8px; border: 1px solid var(--line); font-weight: 500; font-size: 14px; color: var(--muted); }
+.sum-btn[aria-pressed="true"] { color: var(--fg); border-color: var(--accent); }
+
+.station-layout { display: flex; gap: 16px; align-items: flex-start; }
+.station-layout > .board { flex: 1; min-width: 0; }
+.board { display: grid; gap: 12px; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); align-items: start; }
+.empty { grid-column: 1 / -1; padding: 56px 0; text-align: center; color: var(--muted); border: 1px dashed var(--line); border-radius: 12px; }
+
+/* ---- ticket ---- */
+.ticket { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; transition: opacity .2s, border-color .2s; }
+.ticket.warn { border-color: color-mix(in srgb, var(--warn) 50%, var(--line)); }
+.ticket.crit { border-color: var(--crit); }
+.ticket.all-ready { border-color: var(--ok); }
+.ticket.dim { opacity: .25; }
+.t-head { padding: 14px 14px 10px; display: grid; gap: 4px; }
+.t-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.t-table { font-size: 22px; font-weight: 600; letter-spacing: -.01em; display: flex; align-items: center; gap: 8px; }
+.timer { font-size: 15px; font-weight: 700; padding: 3px 8px; border-radius: 6px; color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.ticket.warn .timer { color: var(--warn); background: color-mix(in srgb, var(--warn) 16%, transparent); }
+.ticket.crit .timer { color: #fff; background: var(--crit); }
+.t-meta { font: 500 11px var(--f-mono); letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+.badge { font: 600 10px var(--f-mono); letter-spacing: .08em; padding: 3px 6px; border-radius: 4px; border: 1px solid var(--accent); color: var(--accent); }
+.comment { margin: 0 14px 10px; padding: 8px 10px; border-radius: 8px; font-size: 14px; background: color-mix(in srgb, var(--warn) 12%, transparent); color: color-mix(in srgb, var(--warn) 55%, var(--fg)); }
+.comment.alert { background: color-mix(in srgb, var(--crit) 18%, transparent); color: #FFD4D4; font-weight: 600; }
+.units { list-style: none; margin: 0; padding: 0; }
+.unit { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-top: 1px solid var(--line); min-height: 54px; cursor: pointer; user-select: none; }
+.unit:hover { background: color-mix(in srgb, var(--fg) 3%, transparent); }
+.unit .box { width: 22px; height: 22px; flex: none; border-radius: 50%; border: 2px solid var(--muted); display: grid; place-items: center; font-size: 12px; font-weight: 700; }
+.unit .name { flex: 1; min-width: 0; font-size: 16px; font-weight: 500; }
+.unit .mod { display: block; font-size: 13px; color: var(--warn); }
+.unit .mod.minus { color: #FF8E8E; }
+.unit .cnt { font: 700 13px var(--f-mono); color: var(--accent); margin-right: 6px; }
+.unit .meta { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 2px; }
+.unit .meta:empty { display: none; }
+.unit .who { font: 500 11px var(--f-mono); color: var(--muted); white-space: nowrap; }
+.unit .rt { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.unit .rt.over { color: var(--crit); font-weight: 700; }
+.unit .st-tag { font: 500 10px var(--f-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+.unit .info { flex: none; width: 28px; height: 28px; border-radius: 50%; border: 1px solid var(--line); color: var(--muted); font: 600 12px var(--f-mono); }
+.unit .info:hover { color: var(--fg); border-color: var(--muted); }
+.unit.taken { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.unit.taken .box { border-color: var(--accent); }
+.unit.taken .box::after { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+.unit.taken .who { color: var(--accent); }
+.unit.ready .box { border-color: var(--ok); background: var(--ok); }
+.unit.ready .box::after { content: "✓"; color: var(--ok-ink); }
+.unit.ready .name { color: var(--muted); }
+.unit.ready .nm { text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--ok) 60%, transparent); }
+.unit.cancelled { cursor: default; background: color-mix(in srgb, var(--crit) 8%, transparent); }
+.unit.cancelled .name { color: #FF9C9C; }
+.unit.cancelled .nm { text-decoration: line-through; }
+.unit.cancelled .box { border-color: var(--crit); }
+.unit.cancelled .box::after { content: "✕"; color: var(--crit); }
+.unit.cancelled .who { color: var(--crit); }
+.unit.hl { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.unit.pass { cursor: default; }
+.t-actions { padding: 12px 14px 14px; }
+.t-actions button { width: 100%; padding: 13px; border-radius: 10px; background: var(--ok); color: var(--ok-ink); font-weight: 600; font-size: 16px; }
+.t-actions button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+.t-actions button.dismiss { background: transparent; color: var(--crit); border: 1px solid var(--crit); }
+.done-strip { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+.done { font: 500 12px var(--f-mono); color: var(--muted); padding: 5px 10px; border-radius: 6px; border: 1px solid var(--line); }
+.done b { color: var(--ok); }
+
+/* ---- summary ---- */
+.summary { width: 300px; flex: none; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 12px; position: sticky; top: calc(env(safe-area-inset-top, 0px) + 72px); }
+.sum-tabs { display: flex; gap: 4px; padding: 3px; border-radius: 9px; background: var(--bg); margin-bottom: 10px; }
+.sum-tabs button { flex: 1; padding: 6px 10px; border-radius: 7px; color: var(--muted); font-size: 13px; font-weight: 500; }
+.sum-tabs button[aria-pressed="true"] { background: var(--surface-2); color: var(--fg); }
+.sum-total { font: 500 11px var(--f-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-bottom: 6px; }
+.sum-row { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; padding: 9px 8px; border-radius: 8px; border-top: 1px solid var(--line); }
+.sum-row:first-child { border-top: 0; }
+button.sum-row:hover { background: var(--surface-2); }
+.sum-row[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.sum-row .n { min-width: 52px; font: 700 20px var(--f-mono); color: var(--fg); text-align: right; }
+.sum-row .t { flex: 1; min-width: 0; font-weight: 500; }
+.sum-row .t small { display: block; color: var(--warn); font-weight: 400; }
+.sum-row .t em { display: block; font: normal 400 12px var(--f-ui); color: var(--accent); }
+.sum-note { color: var(--muted); font-size: 12px; }
+
+/* ---- Poster register mock (light, like the real one) ---- */
+.pos { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 16px; align-items: start; }
+.pos-pane { background: #F5F6F8; color: #1B2130; border-radius: 14px; padding: 16px; }
+.pos-pane h2 { font-size: 16px; color: #1B2130; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.pos-pane h2 span { font: 500 11px var(--f-mono); letter-spacing: .06em; text-transform: uppercase; color: #77808F; }
+.pos-pane select, .pos-pane input { background: #fff; color: #1B2130; border-color: #D8DCE3; }
+.pos-fields { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
+.pos-fields label { display: grid; gap: 4px; font-size: 12px; color: #6B7485; }
+.pos-fields label.grow { flex: 1; min-width: 140px; }
+.menu-group { margin-bottom: 12px; }
+.menu-group h3 { font: 500 11px var(--f-mono); letter-spacing: .08em; text-transform: uppercase; color: #77808F; margin-bottom: 6px; }
+.menu { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; }
+.prod { background: #fff; border: 1px solid #E2E5EA; border-radius: 10px; padding: 10px; text-align: left; color: #1B2130; display: grid; gap: 2px; }
+.prod:hover { border-color: #3D6FE0; }
+.prod b { font-weight: 500; font-size: 14px; }
+.prod span { font: 500 12px var(--f-mono); color: #6B7485; }
+.cart { list-style: none; margin: 0; padding: 0; }
+.cart li { display: flex; gap: 8px; align-items: center; padding: 9px 0; border-bottom: 1px solid #E5E7EC; font-size: 14px; }
+.cart li .q { font: 700 13px var(--f-mono); min-width: 28px; }
+.cart li .nm { flex: 1; min-width: 0; }
+.cart li .nm small { display: block; color: #7A8394; }
+.cart li .pr { font: 500 13px var(--f-mono); }
+.cart li button { color: #B42318; font-weight: 700; padding: 2px 8px; }
+.cart-total { display: flex; justify-content: space-between; margin: 12px 0; font-weight: 600; }
+.pos-btn { width: 100%; padding: 13px; border-radius: 10px; background: #2FA866; color: #fff; font-weight: 600; font-size: 16px; }
+.pos-btn:disabled { background: #BCC3CD; cursor: not-allowed; }
+.checks { display: grid; gap: 8px; margin-top: 16px; }
+.check { background: #fff; border: 1px solid #E2E5EA; border-radius: 10px; padding: 10px 12px; }
+.check-row { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.check-row b { font-weight: 600; }
+.check .mini { color: #6B7485; font: 500 12px var(--f-mono); }
+.check .acts { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.check .acts button { padding: 7px 10px; border-radius: 8px; background: #EEF1F6; font-size: 13px; font-weight: 500; color: #1B2130; }
+.check .acts button.kds { background: #1B2130; color: #fff; }
+.check .acts button.pay { background: #2FA866; color: #fff; }
+.check .lines { margin-top: 6px; font-size: 13px; color: #404858; display: grid; gap: 2px; }
+.check .lines span { display: flex; justify-content: space-between; gap: 8px; }
+.check .lines button { color: #B42318; font-size: 12px; }
+
+/* ---- reports ---- */
+.reports { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); align-items: start; }
+.rcard { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 16px; min-width: 0; }
+.rcard.wide { grid-column: 1 / -1; }
+.rcard h2 { font-size: 17px; margin-bottom: 4px; }
+.rcard p.sub { color: var(--muted); font-size: 13px; margin: 0 0 12px; }
+.tbl-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { font: 500 11px var(--f-mono); letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+td.n, th.n { text-align: right; font-family: var(--f-mono); font-variant-numeric: tabular-nums; }
+tfoot td { font-weight: 600; border-bottom: 0; }
+.pill { display: inline-block; padding: 1px 8px; border-radius: 99px; font: 600 11px var(--f-mono); }
+.pill.ok { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.pill.bad { background: color-mix(in srgb, var(--crit) 18%, transparent); color: #FF9C9C; }
+.pill.mid { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+.nodata { color: var(--muted); font-size: 13px; }
+
+/* ---- dialogs ---- */
+.overlay { position: fixed; inset: 0; background: rgba(3, 5, 8, .7); backdrop-filter: blur(3px); display: grid; place-items: center; z-index: 20;
+  padding: max(16px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) max(16px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px)); }
+.dialog { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; width: 100%; max-width: 440px; max-height: 88vh; overflow: auto; box-shadow: 0 24px 60px rgba(0, 0, 0, .5); }
+.dialog.light { background: #fff; color: #1B2130; border-color: #fff; }
+.d-head { display: flex; justify-content: space-between; align-items: center; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.dialog.light .d-head { background: #1B2130; color: #fff; border-bottom: 0; }
+.d-head h2 { font-size: 16px; }
+.d-head button { font-size: 18px; padding: 0 4px; color: var(--muted); }
+.dialog.light .d-head button { color: #fff; }
+.d-body { padding: 16px; }
+.ing { width: 100%; }
+.ing td.n { color: var(--fg); font-weight: 700; }
+.note { margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: var(--surface-2); font-size: 14px; }
+.ready-big { font-size: 24px; font-weight: 600; margin: 4px 0 12px; }
+.ready-big.ok { color: #12924D; } .ready-big.wait { color: #B45309; }
+.stbox { border: 1px solid #E3E6EB; border-radius: 10px; padding: 9px 11px; margin-bottom: 8px; }
+.stbox .bar { height: 6px; background: #EEF0F3; border-radius: 6px; overflow: hidden; margin-top: 6px; }
+.stbox .bar i { display: block; height: 100%; background: #16A34A; }
+.ulist { list-style: none; margin: 8px 0 0; padding: 0; font-size: 14px; }
+.ulist li { display: flex; justify-content: space-between; gap: 8px; padding: 6px 0; border-top: 1px solid #F0F1F4; }
+.s-ready { color: #12924D; } .s-taken { color: #2B63D9; } .s-new { color: #B45309; }
+.confirm-actions { display: flex; gap: 8px; margin-top: 16px; }
+.confirm-actions button { flex: 1; padding: 12px; border-radius: 10px; border: 1px solid var(--line); font-weight: 600; }
+.confirm-actions button.yes { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.who-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.who-grid button { display: grid; justify-items: center; gap: 10px; padding: 20px 10px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface-2); font-size: 18px; font-weight: 600; }
+.who-grid button:hover { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface-2)); }
+.who-grid .av { width: 46px; height: 46px; border-radius: 50%; display: grid; place-items: center; background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--accent); font: 700 18px var(--f-mono); }
+.badge.take { border-color: var(--warn); color: var(--warn); }
+.badge.agg { color: #fff; }
+.tab.pulse, .pulse-btn { box-shadow: 0 0 0 2px var(--accent); animation: ring 1.4s infinite; }
+@keyframes ring { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 70%, transparent); } 70%, 100% { box-shadow: 0 0 0 10px transparent; } }
+.tour-btn { padding: 7px 12px; border-radius: 8px; background: var(--accent); color: var(--accent-ink); font-weight: 600; font-size: 13px; white-space: nowrap; }
+.tour { position: fixed; z-index: 15; right: max(16px, env(safe-area-inset-right, 0px)); bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  width: 340px; max-width: calc(100vw - 32px); background: var(--surface); border: 1px solid var(--accent); border-radius: 14px; padding: 14px 16px; box-shadow: 0 20px 50px rgba(0, 0, 0, .55); }
+body.touring { padding-bottom: 320px; }
+.tour h2 { font-size: 15px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.tour h2 button { color: var(--muted); font-size: 18px; padding: 0 4px; }
+.tour ol { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; }
+.tour li { display: grid; grid-template-columns: 22px 1fr; gap: 8px; font-size: 13px; color: var(--muted); align-items: start; }
+.tour li .dot { width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--line); display: grid; place-items: center; font: 600 11px var(--f-mono); }
+.tour li.ok .dot { background: var(--ok); border-color: var(--ok); color: var(--ok-ink); }
+.tour li.now { color: var(--fg); }
+.tour li.now .dot { border-color: var(--accent); color: var(--accent); }
+.tour li.now b { display: block; }
+.tour .fin { margin-top: 10px; padding: 10px; border-radius: 10px; background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--fg); font-size: 13px; }
+.tv { display: grid; grid-template-columns: 1fr 1.4fr; gap: 16px; min-height: 60vh; }
+.tv section { border-radius: 16px; padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
+.tv .prep { background: var(--surface); border: 1px solid var(--line); }
+.tv .ready { background: color-mix(in srgb, var(--ok) 12%, var(--bg)); border: 1px solid color-mix(in srgb, var(--ok) 45%, transparent); }
+.tv h2 { font-size: 26px; }
+.tv .prep h2 { color: var(--muted); } .tv .ready h2 { color: var(--ok); }
+.tv .nums { display: flex; flex-wrap: wrap; gap: 14px 22px; align-content: flex-start; }
+.tv .no { display: inline-flex; flex-direction: column; align-items: center; gap: 4px; font: 700 52px/1 var(--f-mono); font-variant-numeric: tabular-nums; }
+.tv .prep .no { font-size: 40px; color: var(--fg); opacity: .85; }
+.tv .ready .no { color: var(--ok); cursor: pointer; border-radius: 10px; padding: 4px 6px; }
+.tv .ready .no:hover { background: color-mix(in srgb, var(--ok) 16%, transparent); }
+.tv .tag { font: 700 12px var(--f-ui); padding: 3px 7px; border-radius: 5px; color: #fff; }
+.tv .empty-tv { color: var(--muted); font-size: 15px; }
+@media (max-width: 700px) { .tv { grid-template-columns: 1fr; } .tv .no { font-size: 40px; } .tv .prep .no { font-size: 32px; } }
+.toast { position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); background: var(--fg); color: var(--bg); padding: 10px 16px; border-radius: 10px; z-index: 30; max-width: calc(100vw - 32px); font-size: 14px; font-weight: 500; box-shadow: 0 10px 30px rgba(0, 0, 0, .4); }
+
+@media (max-width: 860px) {
+  .pos { grid-template-columns: 1fr; }
+  .station-layout { flex-direction: column; }
+  .station-layout { align-items: stretch; }
+  .summary { width: 100%; position: static; }
+}
+@media (max-width: 700px) {
+  .rail-in { grid-template-columns: 1fr auto auto; grid-template-areas: "mark tour demo" "tabs tabs tabs"; gap: 6px 10px; padding-top: 10px; }
+  .mark { grid-area: mark; } .demo { grid-area: demo; } .tour-btn { grid-area: tour; } .tabs { grid-area: tabs; margin-inline: -4px; padding-bottom: 8px; }
+  .tour { left: max(16px, env(safe-area-inset-left, 0px)); width: auto; padding: 10px 12px; }
+  .tour li:not(.now) { display: none; }
+  .tour ol { margin-top: 6px; }
+  body.touring { padding-bottom: 170px; }
+  body.touring .toast { bottom: calc(150px + env(safe-area-inset-bottom, 0px)); }
+  .board { grid-template-columns: 1fr; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+<style>:root { padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); } body { margin: 0; } [hidden] { display: none !important; }</style>
+</head>
+<body>
+
+
+<header class="rail">
+  <div class="rail-in">
+    <div class="mark"><span class="live" aria-hidden="true"></span>KDS<small>для Poster</small></div>
+    <nav class="tabs" id="tabs" aria-label="Экраны">
+      <a class="tab" href="#pos" data-view="pos">Касса</a>
+      <a class="tab" href="#bar" data-view="bar">Бар <span class="count" id="c-bar">0</span></a>
+      <a class="tab" href="#kitchen" data-view="kitchen">Кухня <span class="count" id="c-kitchen">0</span></a>
+      <a class="tab" href="#pass" data-view="pass">Раздача <span class="count" id="c-pass">0</span></a>
+      <a class="tab" href="#tv" data-view="tv">ТВ гостей <span class="count" id="c-tv">0</span></a>
+      <a class="tab" href="#reports" data-view="reports">Отчёты</a>
+    </nav>
+    <button class="tour-btn" id="tourBtn">▶ Путь заказа</button>
+    <details class="demo" id="demo"><summary>Демо</summary>
+      <div class="demo-pop">
+        <div class="toggle"><span id="lbl-auto">Новые заказы сами</span><button class="switch" id="auto" aria-pressed="true" aria-labelledby="lbl-auto"></button></div>
+        <div class="toggle"><span id="lbl-bots">Персонал отмечает сам</span><button class="switch" id="bots" aria-pressed="false" aria-labelledby="lbl-bots"></button></div>
+        <button class="ghost" id="reset">Начать смену заново</button>
+      </div>
+    </details>
+  </div>
+</header>
+
+<p class="hint" id="hint"></p>
+<main class="view" id="view"></main>
+<div id="layer"></div>
+<aside class="tour" id="tour" hidden aria-live="polite"></aside>
+
+<script>
+'use strict';
+// ---------------------------------------------------------------------------
+// Demo data. Prices in € incl. VAT (käibemaks 24 %); rate = piece rate paid to whoever makes the portion;
+// norm = seconds from "взял" to "готово".
+const PRODUCTS = [
+  { id: 'moj', name: 'Мохито', st: 'bar', price: 9.5, rate: 0.8, norm: 90, how: 'Мяту слегка подавить мадлером. Лёд — доверху. Подавать с трубочкой.',
+    recipe: [['Ром белый', 50, 'мл'], ['Лайм', 0.5, 'шт'], ['Мята', 5, 'г'], ['Сахарный сироп', 15, 'мл'], ['Содовая', 100, 'мл']] },
+  { id: 'neg', name: 'Негрони', st: 'bar', price: 11, rate: 1, norm: 60, how: 'Стир 20 секунд, рокс с большим кубом, цедра апельсина.',
+    recipe: [['Джин', 30, 'мл'], ['Кампари', 30, 'мл'], ['Вермут красный', 30, 'мл']] },
+  { id: 'lat', name: 'Латте', st: 'bar', price: 4.2, rate: 0.4, norm: 120, mods: ['Овсяное молоко', 'Без сахара'],
+    recipe: [['Эспрессо', 1, 'порц.'], ['Молоко', 200, 'мл']] },
+  { id: 'bee', name: 'Пиво 0,5', st: 'bar', price: 6.5, rate: 0.2, norm: 40, recipe: [] },
+  { id: 'bur', name: 'Бургер', st: 'kitchen', price: 14.9, rate: 1.5, norm: 420, mods: ['Без лука', 'Двойной сыр'],
+    how: 'Котлету жарить до 68 °C внутри, булку прогреть срезом вниз.',
+    recipe: [['Котлета говяжья', 180, 'г'], ['Булочка бриошь', 1, 'шт'], ['Чеддер', 20, 'г'], ['Соус фирменный', 25, 'г']] },
+  { id: 'pas', name: 'Карбонара', st: 'kitchen', price: 13.5, rate: 1.4, norm: 480,
+    recipe: [['Спагетти', 110, 'г'], ['Гуанчиале', 60, 'г'], ['Желток', 2, 'шт'], ['Пекорино', 25, 'г']] },
+  { id: 'cae', name: 'Цезарь', st: 'kitchen', price: 12.9, rate: 1.2, norm: 300, mods: ['Без гренок'],
+    recipe: [['Ромэн', 90, 'г'], ['Курица гриль', 80, 'г'], ['Пармезан', 15, 'г'], ['Соус цезарь', 30, 'г']] },
+  { id: 'fri', name: 'Картофель фри', st: 'kitchen', price: 4.9, rate: 0.5, norm: 240, recipe: [['Картофель', 150, 'г'], ['Соль', 2, 'г']] },
+];
+const P = Object.fromEntries(PRODUCTS.map((p) => [p.id, p]));
+const STAFF = { bar: ['Иван', 'Кристьян', 'Лийс'], kitchen: ['Мария', 'Кадри'], pass: ['Анна', 'Март'] };
+const WAITERS = ['Анна', 'Март'];
+const STATIONS = { bar: 'Бар', kitchen: 'Кухня' };
+const ALERT = /аллерг|непереносим|орех|без глютен/i;
+
+let S; // state
+const now = () => Date.now();
+const MIN = 60e3;
+
+function emptyState() {
+  return { seq: 1, checks: [], tickets: [], units: [], shift: { bar: ['Иван', 'Кристьян'], kitchen: ['Мария', 'Кадри'], pass: ['Анна', 'Март'] },
+    auto: true, bots: false, filter: null, summary: { bar: true, kitchen: false }, sumTab: 'items', cart: [], log: [] };
+}
+
+// ---- domain ------------------------------------------------------------------
+// mode: hall (a table) | takeaway | wolt | bolt — the last three get an order number instead of a table.
+function openCheck(table, waiter, comment, at = now(), mode = 'hall') {
+  const c = { id: 1000 + S.seq++, table, waiter, comment, openedAt: at, closedAt: null, status: 'open', register: 1 + (S.seq % 2), mode };
+  S.checks.push(c);
+  return c;
+}
+// A batch sent from the register: first order or a later addition ("дозаказ").
+function punch(check, items, at = now()) {
+  const round = S.tickets.filter((t) => t.checkId === check.id).length + 1;
+  const t = { id: S.seq++, checkId: check.id, round, createdAt: at, servedAt: null, servedBy: null };
+  S.tickets.push(t);
+  for (const it of items) for (let i = 0; i < it.qty; i++) {
+    S.units.push({ id: S.seq++, ticketId: t.id, checkId: check.id, pid: it.pid, mod: it.mod || null, status: 'new', createdAt: at,
+      takenBy: null, takenAt: null, readyBy: null, readyAt: null, cancelledAt: null, madeThenRemoved: false, ack: false });
+  }
+  return t;
+}
+// Waiter removes one portion in the register: cancel what costs least.
+function removePortion(checkId, pid, mod) {
+  const order = { new: 0, taken: 1, ready: 2 };
+  const u = S.units.filter((x) => x.checkId === checkId && x.pid === pid && x.mod === mod && x.status !== 'cancelled')
+    .sort((a, b) => order[a.status] - order[b.status] || b.id - a.id)[0];
+  if (!u) return;
+  u.madeThenRemoved = u.status === 'ready';
+  u.ack = u.madeThenRemoved;
+  u.status = 'cancelled';
+  u.cancelledAt = now();
+  return u;
+}
+function closeCheck(c) { c.status = 'closed'; c.closedAt = now(); }
+const MODES = { hall: 'В зале', takeaway: 'С собой', wolt: 'Wolt', bolt: 'Bolt Food' };
+const AGG = { wolt: '#009DE0', bolt: '#1F9E5C' };
+const isHall = (c) => !c.mode || c.mode === 'hall';
+const orderNo = (c) => String(c.id % 1000).padStart(3, '0');
+const titleOf = (c) => (isHall(c) ? `Стол ${c.table}` : `№ ${orderNo(c)}`);
+const modeBadge = (c) => (isHall(c) ? '' : AGG[c.mode]
+  ? `<span class="badge agg" style="background:${AGG[c.mode]};border-color:${AGG[c.mode]}">${MODES[c.mode]}</span>` : '<span class="badge take">С собой</span>');
+const checkSum = (c) => S.units.filter((u) => u.checkId === c.id && u.status !== 'cancelled').reduce((s, u) => s + P[u.pid].price, 0);
+
+function act(action, units, who) {
+  for (const u of units) {
+    if (u.status === 'cancelled') continue;
+    if (action === 'take' && u.status === 'new') Object.assign(u, { status: 'taken', takenBy: who, takenAt: now() });
+    else if (action === 'ready' && (u.status === 'new' || u.status === 'taken')) {
+      if (u.status === 'taken' && u.takenBy !== who) u.intercepted = u.takenBy;
+      Object.assign(u, { status: 'ready', readyBy: who, readyAt: now(), takenBy: u.takenBy || who, takenAt: u.takenAt || now() });
+    } else if (action === 'undo' && u.status === 'ready' && u.readyBy === who) Object.assign(u, { status: 'taken', readyBy: null, readyAt: null });
+  }
+}
+
+// ---- seed: a shift already in progress -----------------------------------------
+function seed() {
+  S = emptyState();
+  const t0 = now();
+  // Finished earlier tonight: gives the reports something to show.
+  const history = [
+    ['2', 'Анна', [['moj', 2], ['bur', 2], ['fri', 1]], 'Иван', 'Мария', 95],
+    ['9', 'Март', [['neg', 2], ['bee', 3]], 'Кристьян', null, 88],
+    ['5', 'Анна', [['lat', 2], ['cae', 1]], 'Иван', 'Кадри', 76],
+    ['11', 'Март', [['bee', 4], ['fri', 2], ['bur', 1]], 'Кристьян', 'Мария', 64],
+    ['3', 'Анна', [['moj', 3], ['pas', 2]], 'Иван', 'Кадри', 52],
+    ['8', 'Март', [['neg', 1], ['lat', 1], ['cae', 2]], 'Иван', 'Мария', 41],
+  ];
+  for (const [table, waiter, items, barman, cook, agoMin] of history) {
+    const at = t0 - agoMin * MIN;
+    const c = openCheck(table, waiter, '', at);
+    const tk = punch(c, items.map(([pid, qty]) => ({ pid, qty })), at);
+    for (const u of S.units.filter((x) => x.ticketId === tk.id)) {
+      const who = P[u.pid].st === 'bar' ? barman : cook;
+      const make = P[u.pid].norm * (0.6 + ((u.id * 37) % 70) / 100);
+      Object.assign(u, { status: 'ready', takenBy: who, takenAt: at + 40e3, readyBy: who, readyAt: at + 40e3 + make * 1000 });
+    }
+    tk.servedAt = at + 12 * MIN; tk.servedBy = waiter;
+    c.status = 'closed'; c.closedAt = at + 35 * MIN;
+  }
+  // One drink made and then taken off the check — the control tab will show it.
+  const c9 = S.checks.find((c) => c.table === '9');
+  const extra = punch(c9, [{ pid: 'moj', qty: 1 }], t0 - 80 * MIN);
+  const ex = S.units.find((u) => u.ticketId === extra.id);
+  Object.assign(ex, { status: 'cancelled', takenBy: 'Кристьян', takenAt: t0 - 79 * MIN, readyBy: 'Кристьян', readyAt: t0 - 78 * MIN, cancelledAt: t0 - 70 * MIN, madeThenRemoved: true, ack: true });
+  extra.servedAt = t0 - 70 * MIN;
+
+  // Open orders right now, at different stages.
+  const a = openCheck('4', 'Анна', '', t0 - 6.5 * MIN);
+  punch(a, [{ pid: 'moj', qty: 2 }, { pid: 'neg', qty: 1 }, { pid: 'bur', qty: 2, mod: 'Без лука' }], t0 - 6.5 * MIN);
+  const ua = S.units.filter((u) => u.checkId === a.id);
+  act('take', [ua[0]], 'Иван'); ua[0].takenAt = t0 - 4 * MIN; act('ready', [ua[0]], 'Иван'); ua[0].readyAt = t0 - 3 * MIN;
+  act('take', [ua[3], ua[4]], 'Мария'); ua[3].takenAt = ua[4].takenAt = t0 - 5 * MIN;
+  const b = openCheck('12', 'Март', 'Аллергия на орехи', t0 - 11.5 * MIN);
+  punch(b, [{ pid: 'pas', qty: 1 }, { pid: 'cae', qty: 1, mod: 'Без гренок' }, { pid: 'bee', qty: 2 }], t0 - 11.5 * MIN);
+  const ub = S.units.filter((u) => u.checkId === b.id);
+  act('ready', [ub[2], ub[3]], 'Кристьян'); ub[2].readyAt = ub[3].readyAt = t0 - 10 * MIN; ub[2].takenAt = ub[3].takenAt = t0 - 10.5 * MIN;
+  act('take', [ub[0]], 'Кадри'); ub[0].takenAt = t0 - 8 * MIN;
+  const c = openCheck('7', 'Анна', 'Один латте — на вынос', t0 - 1.5 * MIN);
+  punch(c, [{ pid: 'lat', qty: 1, mod: 'Овсяное молоко' }, { pid: 'lat', qty: 1 }, { pid: 'fri', qty: 1 }], t0 - 1.5 * MIN);
+  const w = openCheck('', 'Март', 'Wolt #A12B', t0 - 4 * MIN, 'wolt');
+  punch(w, [{ pid: 'bur', qty: 1 }, { pid: 'fri', qty: 1 }], t0 - 4 * MIN);
+  const uw = S.units.filter((u) => u.checkId === w.id); act('take', uw, 'Кадри'); uw.forEach((u) => { u.takenAt = t0 - 3 * MIN; });
+  const tk = openCheck('', 'Анна', '', t0 - 3 * MIN, 'takeaway');
+  punch(tk, [{ pid: 'lat', qty: 1 }], t0 - 3 * MIN);
+  const ut = S.units.filter((u) => u.checkId === tk.id); act('ready', ut, 'Иван'); ut.forEach((u) => { u.takenAt = t0 - 150e3; u.readyAt = t0 - 60e3; });
+  S.cart = [{ pid: 'neg', qty: 2 }, { pid: 'fri', qty: 1 }];
+}
+
+// ---- persistence (per viewer, optional) ---------------------------------------------
+const KEY = 'kds-demo-v3';
+function save() { try { localStorage.setItem(KEY, JSON.stringify(S)); } catch { /* demo works without it */ } }
+function load() {
+  try {
+    const s = JSON.parse(localStorage.getItem(KEY));
+    if (s && s.units && s.checks && now() - (s.savedAt || 0) < 6 * 3600e3) { S = s; return true; }
+  } catch { /* fresh start */ }
+  return false;
+}
+
+// ---- helpers ----------------------------------------------------------------------------
+const $ = (sel, el = document) => el.querySelector(sel);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const mmss = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+const VAT = 0.24; // Estonian standard rate, prices include it
+const eur = (n) => n.toLocaleString('ru-RU', { style: 'currency', currency: 'EUR' });
+const checkOf = (id) => S.checks.find((c) => c.id === id);
+const isOpenU = (u) => u.status === 'new' || u.status === 'taken';
+const stOf = (u) => P[u.pid].st;
+const unitLabel = (u) => P[u.pid].name;
+let toastTimer;
+function toast(msg) {
+  let t = $('#toast');
+  if (!t) { t = document.createElement('div'); t.id = 'toast'; t.className = 'toast'; t.setAttribute('role', 'status'); document.body.appendChild(t); }
+  t.textContent = msg; t.hidden = false;
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 2600);
+}
+
+// ---- dialogs ----------------------------------------------------------------------------
+function dialog({ title, body, light = false, onClose }) {
+  const layer = $('#layer');
+  layer.innerHTML = `<div class="overlay" id="ov"><div class="dialog ${light ? 'light' : ''}" role="dialog" aria-modal="true" aria-labelledby="dlg-t">
+    <div class="d-head"><h2 id="dlg-t">${esc(title)}</h2><button id="dlg-x" aria-label="Закрыть">✕</button></div>
+    <div class="d-body" id="dlg-b">${body}</div></div></div>`;
+  const close = () => { layer.innerHTML = ''; onClose?.(); };
+  $('#dlg-x').onclick = close;
+  $('#ov').onclick = (e) => { if (e.target.id === 'ov') close(); };
+  return { close, body: $('#dlg-b') };
+}
+function confirmBox(text, yes, onYes) {
+  const d = dialog({ title: 'Подтвердите', body: `<p>${esc(text)}</p><div class="confirm-actions"><button id="cn">Отмена</button><button class="yes" id="cy">${esc(yes)}</button></div>` });
+  $('#cn').onclick = d.close;
+  $('#cy').onclick = () => { d.close(); onYes(); };
+}
+// Every take / ready / hand-out asks who is doing it: the shared screen has no "current user".
+function pickWho(st, title, onPick) {
+  const names = S.shift[st].length ? S.shift[st] : STAFF[st];
+  if (names.length === 1) return onPick(names[0]);
+  const d = dialog({ title, body: `<div class="who-grid">${names.map((n) => `<button data-n="${esc(n)}"><span class="av">${esc(n[0])}</span>${esc(n)}</button>`).join('')}</div>
+    <p class="nodata" style="margin-top:12px">В рабочей системе сотрудник выбирает себя из списка смены или вводит личный PIN, как настроит владелец.</p>` });
+  d.body.querySelectorAll('[data-n]').forEach((b) => { b.onclick = () => { d.close(); onPick(b.dataset.n); }; });
+}
+function recipeDialog(pid, portions) {
+  const p = P[pid];
+  const rows = p.recipe.map(([n, q, unit]) => `<tr><td>${esc(n)}</td><td class="n">${(Math.round(q * portions * 100) / 100).toLocaleString('ru-RU')} ${esc(unit)}</td></tr>`).join('');
+  dialog({ title: portions > 1 ? `${p.name} × ${portions}` : p.name, body: `
+    ${rows ? `<table class="ing">${rows}</table>` : '<p class="nodata">В Poster нет техкарты для этой позиции.</p>'}
+    ${p.how ? `<div class="note">${esc(p.how)}</div>` : ''}
+    <p class="nodata" style="margin-top:10px">Норма: ${mmss(p.norm * 1000)} · ставка за порцию: ${eur(p.rate)} · состав из техкарты Poster</p>` });
+}
+function readinessDialog(check) {
+  let timer;
+  const d = dialog({ title: 'Готовность заказа', light: true, onClose: () => clearInterval(timer) });
+  const draw = () => {
+    const us = S.units.filter((u) => u.checkId === check.id && u.status !== 'cancelled');
+    const ready = us.filter((u) => u.status === 'ready').length;
+    const tks = S.tickets.filter((t) => t.checkId === check.id && S.units.some((u) => u.ticketId === t.id && u.status !== 'cancelled'));
+    const served = tks.length && tks.every((t) => t.servedAt);
+    const head = served ? `<div class="ready-big ok">Отдано</div>` : ready === us.length && us.length
+      ? `<div class="ready-big ok">Всё готово — можно забирать</div>` : `<div class="ready-big wait">Готово ${ready} из ${us.length}</div>`;
+    const stations = ['kitchen', 'bar'].map((st) => {
+      const x = us.filter((u) => stOf(u) === st);
+      if (!x.length) return '';
+      const r = x.filter((u) => u.status === 'ready').length;
+      const tk = x.filter((u) => u.status === 'taken').length;
+      return `<div class="stbox"><div style="display:flex;justify-content:space-between"><b>${STATIONS[st]}</b><span>${r}/${x.length}${tk ? ` · готовят ${tk}` : ''}${x.length - r - tk ? ` · ждут ${x.length - r - tk}` : ''}</span></div>
+        <div class="bar"><i style="width:${Math.round((r / x.length) * 100)}%"></i></div></div>`;
+    }).join('');
+    const list = us.map((u) => {
+      const who = u.status === 'ready' ? u.readyBy : u.status === 'taken' ? u.takenBy : '';
+      return `<li><span>${esc(unitLabel(u))}${u.mod ? ` <small style="color:#7A8394">${esc(u.mod)}</small>` : ''}</span>
+        <span class="s-${u.status}">${{ ready: 'готово', taken: 'готовят', new: 'ждёт' }[u.status]}${who ? ` · ${esc(who)}` : ''}</span></li>`;
+    }).join('');
+    const first = Math.min(...us.map((u) => u.createdAt));
+    d.body.innerHTML = `<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px"><b style="font-size:18px">${esc(titleOf(check))}</b>
+      <span style="color:#6B7485;font-size:13px" class="num">${us.length ? mmss(now() - first) : '0:00'} с заказа</span></div>${head}${stations}<ul class="ulist">${list}</ul>
+      <p style="color:#6B7485;font-size:12px;margin:10px 0 0">Так это окно выглядит по кнопке «Готовность» в кассе Poster. Обновляется само.</p>`;
+  };
+  draw();
+  timer = setInterval(() => { if (!$('#ov')) return clearInterval(timer); draw(); }, 1000);
+}
+
+// ---- views ----------------------------------------------------------------------------------
+const HINTS = {
+  pos: 'Соберите заказ и нажмите <b>«Пробить»</b>: он появится на экранах бара и кухни. Тип заказа «С собой», Wolt или Bolt — номер вместо стола.',
+  bar: 'Касание по позиции — <b>взял</b>, ещё касание — <b>готово</b>. Порция записывается на того, кто взял.',
+  kitchen: 'Одинаковые блюда собраны в одну строку. Таймер у позиции идёт от «взял» до нормы.',
+  pass: 'Здесь весь заказ целиком. Когда всё готово, карточка зеленеет — нажмите <b>«Отдано»</b>.',
+  tv: 'Телевизор у стойки: номера заказов «с собой» и доставки. Готовый номер переходит вправо — коснитесь его, когда гость забрал.',
+  reports: 'Отчёты считаются сами по каждой отметке на экранах.',
+};
+let view = 'bar';
+function setView(v) {
+  view = HINTS[v] ? v : 'bar';
+  document.querySelectorAll('.tab').forEach((t) => t.setAttribute('aria-current', t.dataset.view === view ? 'page' : 'false'));
+  S.filter = null;
+  render();
+}
+
+function render() {
+  $('#hint').innerHTML = HINTS[view];
+  const v = $('#view');
+  if (view === 'pos') renderPos(v);
+  else if (view === 'reports') renderReports(v);
+  else if (view === 'pass') renderPass(v);
+  else if (view === 'tv') renderTv(v);
+  else renderStation(v, view);
+  renderCounts();
+  tourAdvance();
+  tourDraw();
+  tick();
+  S.savedAt = now();
+  save();
+}
+function renderCounts() {
+  for (const st of ['bar', 'kitchen']) {
+    const n = S.units.filter((u) => stOf(u) === st && isOpenU(u)).length;
+    const el = $(`#c-${st}`); el.textContent = n;
+    const late = S.units.some((u) => stOf(u) === st && isOpenU(u) && now() - u.createdAt > 10 * MIN);
+    el.classList.toggle('hot', late);
+  }
+  $('#c-pass').textContent = passTickets().filter((t) => !t.servedAt).length;
+  $('#c-tv').textContent = tvOrders().filter((o) => o.ready).length;
+}
+
+// Station board: tickets with this station's portions still open, cancellations not yet seen,
+// or just finished (shown for a minute in the done strip).
+function stationTickets(st) {
+  return S.tickets.map((t) => ({ t, us: S.units.filter((u) => u.ticketId === t.id && stOf(u) === st) }))
+    .filter(({ us }) => us.length)
+    .map((x) => ({ ...x, open: x.us.filter(isOpenU), unacked: x.us.filter((u) => u.status === 'cancelled' && !u.ack) }))
+    .filter((x) => x.open.length || x.unacked.length || x.us.some((u) => u.readyAt && now() - u.readyAt < 90e3));
+}
+function groupUnits(us, st) {
+  if (st !== 'kitchen') return us.map((u) => [u]);
+  const g = new Map();
+  for (const u of us) { const k = [u.pid, u.mod, u.status, u.takenBy, u.readyBy].join('|'); g.set(k, [...(g.get(k) || []), u]); }
+  return [...g.values()];
+}
+
+// Tap a name to start or end their shift on this screen.
+function bindShift(v, st) {
+  v.querySelectorAll('[data-shift]').forEach((b) => {
+    b.onclick = () => {
+      const n = b.dataset.shift;
+      const on = S.shift[st].includes(n);
+      if (on && S.shift[st].length === 1) return toast('На смене должен остаться хотя бы один человек');
+      S.shift[st] = on ? S.shift[st].filter((x) => x !== n) : [...S.shift[st], n];
+      toast(on ? `${n} — смена закончена` : `${n} — на смене`);
+      render();
+    };
+  });
+}
+function renderStation(v, st) {
+  const list = stationTickets(st);
+  const active = list.filter((x) => x.open.length || x.unacked.length);
+  const done = list.filter((x) => !x.open.length && !x.unacked.length);
+  const sumOpen = S.summary[st];
+  v.innerHTML = `
+    <div class="st-head"><h1>${STATIONS[st]}</h1><span class="status-dot">Poster · синхронно</span>
+      <div class="spacer"></div><span class="chip-label">На смене:</span><div class="chips">${STAFF[st].map((n) => `<button class="chip" aria-pressed="${S.shift[st].includes(n)}" data-shift="${esc(n)}">${esc(n)}</button>`).join('')}</div>
+      <button class="sum-btn" id="sumBtn" aria-pressed="${sumOpen}">Σ Сводка</button></div>
+    <div class="station-layout"><div class="board" id="board"></div>${sumOpen ? '<aside class="summary" id="summary"></aside>' : ''}</div>
+    <div class="done-strip" id="doneStrip"></div>`;
+  bindShift(v, st);
+  $('#sumBtn').onclick = () => { S.summary[st] = !S.summary[st]; S.filter = null; render(); };
+  const board = $('#board');
+  if (!active.length) board.innerHTML = '<div class="empty">Заказов нет — пробейте что-нибудь на кассе</div>';
+  for (const x of active) board.appendChild(ticketCard(x, st));
+  $('#doneStrip').innerHTML = done.slice(-6).reverse().map(({ t, us }) => {
+    const c = checkOf(t.checkId);
+    const names = [...new Set(us.map((u) => u.readyBy).filter(Boolean))].join(', ');
+    return `<span class="done"><b>✓</b> ${esc(titleOf(c))} · ${esc(names)}</span>`;
+  }).join('');
+  if (sumOpen) renderSummary(st);
+}
+
+function ticketCard({ t, us, open }, st) {
+  const c = checkOf(t.checkId);
+  const el = document.createElement('article');
+  el.className = 'ticket';
+  el.dataset.created = t.createdAt;
+  if (!open.length) el.classList.add('cancelled');
+  if (S.filter && !us.some((u) => isOpenU(u) && `${u.pid}|${u.mod}` === S.filter)) el.classList.add('dim');
+  const alert = c.comment && ALERT.test(c.comment);
+  el.innerHTML = `<div class="t-head"><div class="t-row"><span class="t-table">${esc(titleOf(c))}${modeBadge(c)}${t.round > 1 ? '<span class="badge">ДОЗАКАЗ</span>' : ''}</span>
+      <span class="timer num" data-since="${t.createdAt}"></span></div>
+      <div class="t-meta">Чек ${c.id} · ${esc(c.waiter)} · касса ${c.register}</div></div>
+    ${c.comment ? `<div class="comment ${alert ? 'alert' : ''}">${alert ? '⚠ ' : ''}${esc(c.comment)}</div>` : ''}
+    <ul class="units"></ul><div class="t-actions"></div>`;
+  const ul = $('.units', el);
+  for (const g of groupUnits(us, st)) ul.appendChild(unitRow(g, st));
+  const acts = $('.t-actions', el);
+  const b = document.createElement('button');
+  if (open.length) {
+    b.textContent = open.length > 1 ? `Всё готово (${open.length})` : 'Готово';
+    // Portions already taken go to whoever took them; untaken ones need a name.
+    b.onclick = () => {
+      const fresh = open.filter((u) => u.status === 'new');
+      const finish = (who) => {
+        for (const u of open.filter((x) => x.status === 'taken')) act('ready', [u], u.takenBy);
+        if (who) act('ready', fresh, who);
+        toast(`Готово: записано на ${[...new Set(open.map((u) => u.readyBy))].join(', ')}`);
+        render();
+      };
+      fresh.length ? pickWho(st, fresh.length === open.length ? 'Кто приготовил?' : `Кто приготовил остальные (${fresh.length})?`, finish) : finish(null);
+    };
+  } else {
+    b.className = 'dismiss';
+    b.textContent = 'Позиции отменены — убрать';
+    b.onclick = () => { us.forEach((u) => { if (u.status === 'cancelled') u.ack = true; }); render(); };
+  }
+  acts.appendChild(b);
+  return el;
+}
+
+function unitRow(group, st) {
+  const u = group[0];
+  const li = document.createElement('li');
+  li.className = `unit ${u.status}`;
+  if (S.filter && `${u.pid}|${u.mod}` === S.filter && isOpenU(u)) li.classList.add('hl');
+  const label = u.status === 'ready' ? `готово: ${u.readyBy}` : u.status === 'taken' ? `взял: ${u.takenBy}` : u.status === 'cancelled' ? 'ОТМЕНА' : '';
+  const cnt = group.length > 1 ? `<span class="cnt">×${group.length}</span>` : '';
+  const mod = u.mod ? `<span class="mod ${/^без/i.test(u.mod) ? 'minus' : ''}">${esc(u.mod)}</span>` : '';
+  const rt = u.status === 'taken' ? `<span class="rt" data-taken="${u.takenAt}" data-norm="${P[u.pid].norm}"></span>` : '';
+  li.innerHTML = `<span class="box" aria-hidden="true"></span><span class="name">${cnt}<span class="nm">${esc(unitLabel(u))}</span>${mod}<span class="meta">${label ? `<span class="who">${esc(label)}</span>` : ''}${rt}</span></span>
+    <button class="info" aria-label="Рецептура">i</button>`;
+  $('.info', li).onclick = (e) => { e.stopPropagation(); recipeDialog(u.pid, group.length); };
+  li.onclick = () => {
+    if (u.status === 'cancelled') return;
+    const what = `«${unitLabel(u)}»${group.length > 1 ? ` ×${group.length}` : ''}`;
+    if (u.status === 'new') return pickWho(st, `Кто берёт ${what}?`, (who) => { act('take', group, who); toast(`${what} — взял ${who}`); render(); });
+    if (u.status === 'taken') { act('ready', group, u.takenBy); toast(`${what} готово — записано на ${u.takenBy}`); return render(); }
+    if (u.status === 'ready') confirmBox(`Вернуть ${what} в работу? Отметка «готово» у ${u.readyBy} снимется.`, 'Вернуть', () => { act('undo', group, u.readyBy); render(); });
+  };
+  return li;
+}
+
+function renderSummary(st) {
+  const open = S.units.filter((u) => stOf(u) === st && isOpenU(u));
+  const items = new Map();
+  for (const u of open) {
+    const k = `${u.pid}|${u.mod}`;
+    const it = items.get(k) || { k, pid: u.pid, mod: u.mod, n: 0, taken: 0 };
+    it.n++; if (u.status === 'taken') it.taken++;
+    items.set(k, it);
+  }
+  const ing = new Map();
+  const noRecipe = new Set();
+  for (const u of open) {
+    const p = P[u.pid];
+    if (!p.recipe.length) noRecipe.add(p.name);
+    for (const [n, q, unit] of p.recipe) { const k = `${n}|${unit}`; ing.set(k, { n, unit, q: (ing.get(k)?.q || 0) + q }); }
+  }
+  const el = $('#summary');
+  el.innerHTML = `<div class="sum-tabs"><button data-st="items" aria-pressed="${S.sumTab === 'items'}">Позиции</button>
+    <button data-st="ing" aria-pressed="${S.sumTab === 'ing'}">Ингредиенты</button></div>
+    <div class="sum-total">${open.length ? `Всего к приготовлению: ${open.length}` : 'Всё приготовлено'}</div><div id="sumBody"></div>`;
+  el.querySelectorAll('[data-st]').forEach((b) => { b.onclick = () => { S.sumTab = b.dataset.st; render(); }; });
+  const body = $('#sumBody', el);
+  if (S.sumTab === 'items') {
+    for (const it of [...items.values()].sort((a, b) => b.n - a.n)) {
+      const b = document.createElement('button');
+      b.className = 'sum-row';
+      b.setAttribute('aria-pressed', S.filter === it.k);
+      b.innerHTML = `<span class="n">${it.n}</span><span class="t">${esc(P[it.pid].name)}${it.mod ? `<small>${esc(it.mod)}</small>` : ''}${it.taken ? `<em>в работе: ${it.taken}</em>` : ''}</span>`;
+      b.onclick = () => { S.filter = S.filter === it.k ? null : it.k; render(); };
+      body.appendChild(b);
+    }
+    if (!items.size) body.innerHTML = '<p class="sum-note">Пока нечего готовить.</p>';
+  } else {
+    body.innerHTML = [...ing.values()].sort((a, b) => a.n.localeCompare(b.n, 'ru')).map((i) =>
+      `<div class="sum-row"><span class="n" style="font-size:16px;min-width:84px">${(Math.round(i.q * 100) / 100).toLocaleString('ru-RU')} ${esc(i.unit)}</span><span class="t">${esc(i.n)}</span></div>`).join('')
+      + (noRecipe.size ? `<p class="sum-note">Без техкарты в Poster: ${[...noRecipe].map(esc).join(', ')}</p>` : '')
+      + (!ing.size ? '<p class="sum-note">Нет открытых позиций с техкартой.</p>' : '');
+  }
+}
+
+// Hand out every finished round of the check at once.
+function serve(c, who) {
+  for (const t of S.tickets.filter((x) => x.checkId === c.id && !x.servedAt)) { t.servedAt = now(); t.servedBy = who; }
+  toast(`${titleOf(c)} отдан: ${who}`);
+}
+// Pass: whole orders not handed out yet.
+function passTickets() {
+  return S.tickets.filter((t) => S.units.some((u) => u.ticketId === t.id && u.status !== 'cancelled'))
+    .filter((t) => !t.servedAt || now() - t.servedAt < 90e3);
+}
+function renderPass(v) {
+  const list = passTickets();
+  const active = list.filter((t) => !t.servedAt);
+  v.innerHTML = `<div class="st-head"><h1>Раздача</h1><span class="status-dot">Poster · синхронно</span><div class="spacer"></div>
+    <span class="chip-label">На смене:</span><div class="chips">${STAFF['pass'].map((n) => `<button class="chip" aria-pressed="${S.shift['pass'].includes(n)}" data-shift="${esc(n)}">${esc(n)}</button>`).join('')}</div></div>
+    <div class="board" id="board"></div><div class="done-strip" id="doneStrip"></div>`;
+  bindShift(v, 'pass');
+  const board = $('#board');
+  if (!active.length) board.innerHTML = '<div class="empty">Всё отдано</div>';
+  for (const t of active) {
+    const c = checkOf(t.checkId);
+    const us = S.units.filter((u) => u.ticketId === t.id && u.status !== 'cancelled');
+    const ready = us.filter((u) => u.status === 'ready').length;
+    const el = document.createElement('article');
+    el.className = `ticket ${ready === us.length ? 'all-ready' : ''}`;
+    el.dataset.created = t.createdAt;
+    el.innerHTML = `<div class="t-head"><div class="t-row"><span class="t-table">${esc(titleOf(c))}${modeBadge(c)}${t.round > 1 ? '<span class="badge">ДОЗАКАЗ</span>' : ''}</span>
+      <span class="timer num" data-since="${t.createdAt}"></span></div><div class="t-meta">Чек ${c.id} · ${esc(c.waiter)} · готово ${ready}/${us.length}</div></div>
+      <ul class="units">${us.map((u) => `<li class="unit pass ${u.status}"><span class="box" aria-hidden="true"></span><span class="name">${esc(unitLabel(u))}${u.mod ? `<span class="mod">${esc(u.mod)}</span>` : ''}</span>
+        <span class="st-tag">${STATIONS[stOf(u)]}</span><span class="who">${u.status === 'ready' ? esc(u.readyBy) : u.status === 'taken' ? 'готовят' : 'ждёт'}</span></li>`).join('')}</ul>
+      <div class="t-actions"><button class="${ready === us.length ? '' : 'secondary'}">Отдано</button></div>`;
+    $('.t-actions button', el).onclick = () => {
+      const go = () => pickWho('pass', `Кто отдаёт: ${titleOf(c)}?`, (who) => { serve(c, who); render(); });
+      ready < us.length ? confirmBox(`Ещё не готово ${us.length - ready} поз. Всё равно отметить «Отдано»?`, 'Отдано', go) : go();
+    };
+    board.appendChild(el);
+  }
+  $('#doneStrip').innerHTML = list.filter((t) => t.servedAt).slice(-6).reverse()
+    .map((t) => `<span class="done"><b>✓</b> ${esc(titleOf(checkOf(t.checkId)))} · ${esc(t.servedBy)}</span>`).join('');
+}
+
+// Guest TV: orders without a table — cooking on the left, ready to collect on the right.
+function tvOrders() {
+  return S.checks.filter((c) => !isHall(c)).map((c) => {
+    const ts = S.tickets.filter((t) => t.checkId === c.id);
+    const us = S.units.filter((u) => u.checkId === c.id && u.status !== 'cancelled');
+    return { c, us, served: ts.length > 0 && ts.every((t) => t.servedAt), ready: us.length > 0 && us.every((u) => u.status === 'ready') };
+  }).filter((o) => o.us.length && !o.served);
+}
+function renderTv(v) {
+  const list = tvOrders();
+  const tag = (c) => (AGG[c.mode] ? `<span class="tag" style="background:${AGG[c.mode]}">${MODES[c.mode]}</span>` : '');
+  const prep = list.filter((o) => !o.ready); const ready = list.filter((o) => o.ready);
+  v.innerHTML = `<div class="tv">
+    <section class="prep"><h2>Готовится</h2><div class="nums">${prep.map((o) => `<span class="no">${orderNo(o.c)}${tag(o.c)}</span>`).join('') || '<span class="empty-tv">Нет заказов в работе</span>'}</div></section>
+    <section class="ready"><h2>Готово — заберите</h2><div class="nums">${ready.map((o) => `<button class="no" data-take="${o.c.id}" title="Гость забрал">${orderNo(o.c)}${tag(o.c)}</button>`).join('') || '<span class="empty-tv">Пока нечего забирать</span>'}</div></section>
+  </div>`;
+  v.querySelectorAll('[data-take]').forEach((b) => { b.onclick = () => { const c = checkOf(+b.dataset.take); pickWho('pass', `Кто отдаёт: ${titleOf(c)}?`, (who) => { serve(c, who); render(); }); }; });
+}
+
+// Register: build an order and send it, manage open checks.
+let posTable = '6';
+let posWaiter = 'Анна';
+let posComment = '';
+let posMode = 'hall';
+function renderPos(v) {
+  const cartSum = S.cart.reduce((s, i) => s + P[i.pid].price * i.qty, 0);
+  const open = S.checks.filter((c) => c.status === 'open');
+  v.innerHTML = `<div class="pos">
+    <section class="pos-pane" aria-label="Новый заказ">
+      <h2>Новый заказ <span>так выглядит касса Poster</span></h2>
+      <div class="pos-fields">
+        <label>Заказ<select id="f-mode">${Object.entries(MODES).map(([k, n]) => `<option value="${k}" ${k === posMode ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+        ${posMode === 'hall' ? `<label>Стол<select id="f-table">${Array.from({ length: 14 }, (_, i) => String(i + 1)).map((n) => `<option ${n === posTable ? 'selected' : ''}>${n}</option>`).join('')}</select></label>` : ''}
+        <label>Официант<select id="f-waiter">${WAITERS.map((n) => `<option ${n === posWaiter ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>
+        <label class="grow">Комментарий<input id="f-comment" value="${esc(posComment)}" placeholder="например: аллергия на орехи"></label>
+      </div>
+      ${['bar', 'kitchen'].map((st) => `<div class="menu-group"><h3>${st === 'bar' ? 'Бар' : 'Кухня'}</h3><div class="menu">
+        ${PRODUCTS.filter((p) => p.st === st).flatMap((p) => [{ p, mod: null }, ...(p.mods || []).map((m) => ({ p, mod: m }))])
+          .map(({ p, mod }) => `<button class="prod" data-pid="${p.id}" data-mod="${esc(mod || '')}"><b>${esc(p.name)}</b>${mod ? `<span style="color:#B7791F">${esc(mod)}</span>` : ''}<span>${eur(p.price)}</span></button>`).join('')}
+      </div></div>`).join('')}
+    </section>
+    <section class="pos-pane" aria-label="Чек">
+      <h2>${posMode === 'hall' ? `Стол ${esc(posTable)}` : MODES[posMode]} <span>${posMode !== 'hall' ? 'номер заказа вместо стола' : S.checks.some((c) => c.status === 'open' && isHall(c) && c.table === posTable) ? 'добавится к открытому чеку как дозаказ' : 'новый чек'}</span></h2>
+      <ul class="cart">${S.cart.map((i, idx) => `<li><span class="q">${i.qty}×</span><span class="nm">${esc(P[i.pid].name)}${i.mod ? `<small>${esc(i.mod)}</small>` : ''}</span>
+        <span class="pr">${eur(P[i.pid].price * i.qty)}</span><button data-rm="${idx}" aria-label="Убрать">−</button></li>`).join('') || '<li style="color:#7A8394">Нажмите на позиции слева</li>'}</ul>
+      <div class="cart-total"><span>Итого</span><span class="num">${eur(cartSum)}</span></div>
+      <button class="pos-btn" id="send" ${S.cart.length ? '' : 'disabled'}>Пробить и отправить на KDS</button>
+      <div class="checks">${open.map((c) => {
+        const us = S.units.filter((u) => u.checkId === c.id && u.status !== 'cancelled');
+        const ready = us.filter((u) => u.status === 'ready').length;
+        const lines = new Map();
+        for (const u of us) { const k = `${u.pid}|${u.mod || ''}`; lines.set(k, { pid: u.pid, mod: u.mod, n: (lines.get(k)?.n || 0) + 1 }); }
+        return `<div class="check"><div class="check-row"><b>${esc(titleOf(c))} · чек ${c.id}</b><span class="mini">${esc(c.waiter)} · ${eur(checkSum(c))} · готово ${ready}/${us.length}</span></div>
+          <div class="lines">${[...lines.values()].map((l) => `<span><span>${l.n}× ${esc(P[l.pid].name)}${l.mod ? ` (${esc(l.mod)})` : ''}</span>
+            <button data-del="${c.id}|${l.pid}|${esc(l.mod || '')}">убрать 1</button></span>`).join('')}</div>
+          <div class="acts"><button class="kds" data-ready="${c.id}">Готовность</button><button class="pay" data-pay="${c.id}">Оплатить и закрыть</button></div></div>`;
+      }).join('')}</div>
+    </section></div>`;
+  $('#f-mode').onchange = (e) => { posMode = e.target.value; render(); };
+  const ft = $('#f-table'); if (ft) ft.onchange = (e) => { posTable = e.target.value; render(); };
+  $('#f-waiter').onchange = (e) => { posWaiter = e.target.value; };
+  $('#f-comment').oninput = (e) => { posComment = e.target.value; };
+  v.querySelectorAll('[data-pid]').forEach((b) => {
+    b.onclick = () => {
+      const mod = b.dataset.mod || null;
+      const it = S.cart.find((i) => i.pid === b.dataset.pid && (i.mod || null) === mod);
+      if (it) it.qty++; else S.cart.push({ pid: b.dataset.pid, mod, qty: 1 });
+      render();
+    };
+  });
+  v.querySelectorAll('[data-rm]').forEach((b) => { b.onclick = () => { const i = S.cart[+b.dataset.rm]; if (--i.qty <= 0) S.cart.splice(+b.dataset.rm, 1); render(); }; });
+  $('#send').onclick = () => {
+    let c = posMode === 'hall' ? S.checks.find((x) => x.status === 'open' && isHall(x) && x.table === posTable) : null;
+    const addition = !!c;
+    if (!c) c = openCheck(posMode === 'hall' ? posTable : '', posWaiter, posComment.trim(), now(), posMode);
+    else if (posComment.trim()) c.comment = posComment.trim();
+    punch(c, S.cart);
+    const where = [...new Set(S.cart.map((i) => STATIONS[P[i.pid].st]))].join(' и ');
+    S.cart = []; posComment = '';
+    toast(`${addition ? 'Дозаказ' : 'Заказ'} ${titleOf(c)} ушёл на экран: ${where}`);
+    render();
+  };
+  v.querySelectorAll('[data-ready]').forEach((b) => { b.onclick = () => readinessDialog(checkOf(+b.dataset.ready)); });
+  v.querySelectorAll('[data-pay]').forEach((b) => { b.onclick = () => { const c = checkOf(+b.dataset.pay); closeCheck(c); toast(`Чек ${titleOf(c)} закрыт: ${eur(checkSum(c))}`); render(); }; });
+  v.querySelectorAll('[data-del]').forEach((b) => {
+    b.onclick = () => {
+      const [cid, pid, mod] = b.dataset.del.split('|');
+      const u = removePortion(+cid, pid, mod || null);
+      if (u) toast(u.madeThenRemoved ? `${P[pid].name} уже был приготовлен — попадёт в «Контроль»` : `${P[pid].name} снят с экрана`);
+      render();
+    };
+  });
+}
+
+// Reports, recomputed from the portions on every render.
+function renderReports(v) {
+  const credited = S.units.filter((u) => u.readyBy && (u.status === 'ready' || u.madeThenRemoved));
+  const makers = new Map();
+  for (const u of credited) {
+    const m = makers.get(u.readyBy) || { name: u.readyBy, st: new Set(), n: 0, earned: 0, make: [], inNorm: 0 };
+    m.st.add(STATIONS[stOf(u)]); m.n++; m.earned += P[u.pid].rate;
+    const mk = (u.readyAt - (u.takenAt || u.readyAt)) / 1000; m.make.push(mk); if (mk <= P[u.pid].norm) m.inNorm++;
+    makers.set(u.readyBy, m);
+  }
+  const mk = [...makers.values()].sort((a, b) => b.earned - a.earned);
+  const avg = (a) => (a.length ? a.reduce((s, x) => s + x, 0) / a.length : 0);
+  const closed = S.checks.filter((c) => c.status === 'closed');
+  const sellers = new Map();
+  for (const c of closed) { const s = sellers.get(c.waiter) || { name: c.waiter, n: 0, sum: 0 }; s.n++; s.sum += checkSum(c); sellers.set(c.waiter, s); }
+  const sl = [...sellers.values()].sort((a, b) => b.sum - a.sum);
+  const st = ['bar', 'kitchen'].map((k) => {
+    const x = credited.filter((u) => stOf(u) === k);
+    return { name: STATIONS[k], n: x.length, avg: avg(x.map((u) => (u.readyAt - u.createdAt) / 1000)), earned: x.reduce((s, u) => s + P[u.pid].rate, 0) };
+  });
+  const removed = S.units.filter((u) => u.madeThenRemoved);
+  const intercepted = S.units.filter((u) => u.intercepted);
+  const runners = new Map();
+  for (const t of S.tickets.filter((t) => t.servedBy)) runners.set(t.servedBy, (runners.get(t.servedBy) || 0) + 1);
+  const pctPill = (p) => `<span class="pill ${p >= 85 ? 'ok' : p >= 60 ? 'mid' : 'bad'}">${p}%</span>`;
+
+  v.innerHTML = `<div class="reports">
+    <section class="rcard wide"><h2>Кто приготовил — сегодня</h2><p class="sub">Порция записывается на того, кто отметил «готово». Ставка за позицию задаётся в админке.</p>
+      <div class="tbl-wrap"><table><thead><tr><th>Сотрудник</th><th>Станция</th><th class="n">Порций</th><th class="n">Начислено</th><th class="n">Ср. приготовление</th><th class="n">В норму</th></tr></thead>
+      <tbody>${mk.map((m) => `<tr><td>${esc(m.name)}</td><td>${[...m.st].join(', ')}</td><td class="n">${m.n}</td><td class="n">${eur(m.earned)}</td>
+        <td class="n">${mmss(avg(m.make) * 1000)}</td><td class="n">${pctPill(Math.round((m.inNorm / m.n) * 100))}</td></tr>`).join('')}</tbody>
+      <tfoot><tr><td>Итого</td><td></td><td class="n">${credited.length}</td><td class="n">${eur(mk.reduce((s, m) => s + m.earned, 0))}</td><td></td><td></td></tr></tfoot></table></div></section>
+    <section class="rcard"><h2>Кто продал</h2><p class="sub">Из закрытых чеков Poster. Цены с käibemaks 24 %.</p>
+      ${sl.length ? `<div class="tbl-wrap"><table><thead><tr><th>Официант</th><th class="n">Чеков</th><th class="n">Выручка</th><th class="n">Без НДС</th><th class="n">Средний чек</th></tr></thead>
+      <tbody>${sl.map((s) => `<tr><td>${esc(s.name)}</td><td class="n">${s.n}</td><td class="n">${eur(s.sum)}</td><td class="n">${eur(s.sum / (1 + VAT))}</td><td class="n">${eur(s.sum / s.n)}</td></tr>`).join('')}</tbody></table></div>` : '<p class="nodata">Закрытых чеков пока нет.</p>'}</section>
+    <section class="rcard"><h2>Станции</h2><p class="sub">От заказа до «готово».</p>
+      <div class="tbl-wrap"><table><thead><tr><th>Станция</th><th class="n">Порций</th><th class="n">Ср. время</th><th class="n">Начислено</th></tr></thead>
+      <tbody>${st.map((s) => `<tr><td>${s.name}</td><td class="n">${s.n}</td><td class="n">${mmss(s.avg * 1000)}</td><td class="n">${eur(s.earned)}</td></tr>`).join('')}</tbody></table></div>
+      <p class="sub" style="margin-top:10px">Раздача: ${[...runners.entries()].map(([n, k]) => `${esc(n)} — ${k}`).join(', ') || 'пока никто'}</p></section>
+    <section class="rcard wide"><h2>Контроль</h2><p class="sub">То, чего не видно в Poster: приготовлено, а потом удалено из чека; позиции, которые взял один, а отметил другой.</p>
+      ${removed.length ? `<div class="tbl-wrap"><table><thead><tr><th>Позиция</th><th>Сделал</th><th>Официант</th><th>Стол</th><th>Удалено</th></tr></thead>
+      <tbody>${removed.map((u) => { const c = checkOf(u.checkId); return `<tr><td>${esc(unitLabel(u))} <span class="pill bad">сделано → удалено</span></td><td>${esc(u.readyBy)}</td>
+        <td>${esc(c.waiter)}</td><td>${esc(c.table)}</td><td class="num">${new Date(u.cancelledAt).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}</td></tr>`; }).join('')}</tbody></table></div>` : '<p class="nodata">Нарушений нет.</p>'}
+      ${intercepted.length ? `<p class="sub" style="margin-top:10px">Перехваты: ${intercepted.map((u) => `${esc(unitLabel(u))} — взял ${esc(u.intercepted)}, отметил ${esc(u.readyBy)}`).join('; ')}</p>` : ''}
+    </section></div>`;
+}
+
+// ---- clock: timers, auto orders, auto staff ------------------------------------------------
+function tick() {
+  const t = now();
+  document.querySelectorAll('[data-since]').forEach((el) => {
+    const ms = t - Number(el.dataset.since);
+    el.textContent = mmss(ms);
+    const card = el.closest('.ticket');
+    card.classList.toggle('warn', ms >= 5 * MIN && ms < 10 * MIN);
+    card.classList.toggle('crit', ms >= 10 * MIN);
+  });
+  document.querySelectorAll('[data-taken]').forEach((el) => {
+    const sec = (t - Number(el.dataset.taken)) / 1000;
+    const norm = Number(el.dataset.norm);
+    el.textContent = `${mmss(sec * 1000)} / ${mmss(norm * 1000)}`;
+    el.classList.toggle('over', sec > norm);
+  });
+}
+setInterval(tick, 1000);
+
+const pick = (a) => a[Math.floor(Math.random() * a.length)];
+function autoOrder() {
+  const free = Array.from({ length: 14 }, (_, i) => String(i + 1)).filter((n) => !S.checks.some((c) => c.status === 'open' && c.table === n));
+  const open = S.checks.filter((c) => c.status === 'open');
+  const r = Math.random();
+  if (open.length > 5 || (r < 0.3 && open.length)) {
+    // Close a check whose food is out, or add a round to one.
+    const done = open.find((c) => S.units.filter((u) => u.checkId === c.id && u.status !== 'cancelled').every((u) => u.status === 'ready'));
+    if (done && r < 0.2) { closeCheck(done); return; }
+    const c = pick(open);
+    punch(c, [{ pid: pick(['moj', 'neg', 'bee', 'lat']), qty: 1 }]);
+    return;
+  }
+  const items = [];
+  const nBar = 1 + Math.floor(Math.random() * 3);
+  for (let i = 0; i < nBar; i++) { const p = P[pick(['moj', 'neg', 'lat', 'bee', 'bee'])]; items.push({ pid: p.id, qty: 1 + (Math.random() < 0.3 ? 1 : 0), mod: p.mods && Math.random() < 0.4 ? pick(p.mods) : null }); }
+  if (Math.random() < 0.7) { const p = P[pick(['bur', 'pas', 'cae', 'fri'])]; items.push({ pid: p.id, qty: 1 + (Math.random() < 0.35 ? 1 : 0), mod: p.mods && Math.random() < 0.3 ? pick(p.mods) : null }); }
+  let mode = pick(['hall', 'hall', 'hall', 'takeaway', 'wolt', 'bolt']);
+  if (mode === 'hall' && !free.length) mode = 'takeaway';
+  const c = openCheck(mode === 'hall' ? pick(free) : '', pick(WAITERS), Math.random() < 0.12 ? pick(['Аллергия на орехи', 'Без льда', 'Сначала напитки']) : '', now(), mode);
+  punch(c, items);
+}
+function autoStaff() {
+  for (const st of ['bar', 'kitchen']) {
+    const open = S.units.filter((u) => stOf(u) === st && isOpenU(u)).sort((a, b) => a.createdAt - b.createdAt);
+    const u = open[0];
+    if (!u) continue;
+    const who = u.takenBy || pick(S.shift[st]);
+    if (u.status === 'new') act('take', [u], who);
+    else if (now() - u.takenAt > Math.min(P[u.pid].norm * 1000 * 0.5, 25000)) act('ready', [u], who);
+  }
+  const t = passTickets().find((x) => !x.servedAt && S.units.filter((u) => u.ticketId === x.id && u.status !== 'cancelled').every((u) => u.status === 'ready'));
+  if (t && Math.random() < 0.5) { t.servedAt = now(); t.servedBy = pick(S.shift.pass); }
+}
+// Re-render only when nothing is being typed or shown in a dialog.
+function idleRender() {
+  if ($('#ov')) return;
+  if (view === 'pos' && document.activeElement && document.activeElement.id === 'f-comment') return;
+  render();
+}
+setInterval(() => { if (S.auto) { autoOrder(); idleRender(); } }, 16000);
+setInterval(() => { if (S.bots) { autoStaff(); idleRender(); } }, 4000);
+
+// ---- guided tour: one order from the register to the reports ---------------------------------
+const TOUR = [
+  { t: 'Касса', d: 'Добавьте блюда и нажмите «Пробить». Можно выбрать «С собой» или Wolt.', tab: 'pos', btn: '#send' },
+  { t: 'Экран станции', d: 'Заказ уже там. Откройте «Бар» или «Кухня» — вкладка подсвечена.' },
+  { t: 'Взял', d: 'Коснитесь позиции вашего заказа и выберите, кто берёт.' },
+  { t: 'Готово', d: 'Ещё касание — «готово». Отметьте все позиции заказа; если там и бар, и кухня — вкладка подсветится.' },
+  { t: 'Отдано', d: 'Откройте «Раздача» и нажмите «Отдано». Заказ с собой — коснитесь номера на «ТВ гостей».' },
+  { t: 'Отчёты', d: 'Откройте «Отчёты»: ваша порция и выдача уже посчитаны.', tab: 'reports' },
+];
+let T = null; // { step, since, checkId }
+function tourStart() {
+  T = { step: 0, since: S.seq, checkId: null };
+  S.cart = [];
+  if (S.auto || S.bots) { S.auto = false; S.bots = false; syncSwitches(); toast('Автозаказы на паузе, пока вы проходите путь'); }
+  setView('pos'); history.replaceState(null, '', '#pos');
+}
+function tourAdvance() {
+  if (!T) return;
+  const c = T.checkId ? checkOf(T.checkId) : null;
+  const us = c ? S.units.filter((u) => u.checkId === c.id && u.status !== 'cancelled') : [];
+  const stations = [...new Set(us.map(stOf))];
+  for (let guard = 0; guard < 6; guard++) {
+    if (T.step === 0) { const n = S.checks.filter((x) => x.id - 1000 >= T.since).pop(); if (!n) break; T.checkId = n.id; T.step = 1; return tourAdvance(); }
+    if (T.step === 1 && stations.includes(view)) { T.step = 2; continue; }
+    if (T.step === 2 && us.some((u) => u.status !== 'new')) { T.step = 3; continue; }
+    if (T.step === 3 && us.length && us.every((u) => u.status === 'ready')) { T.step = 4; continue; }
+    if (T.step === 4 && S.tickets.filter((t) => t.checkId === c.id).every((t) => t.servedAt)) { T.step = 5; continue; }
+    if (T.step === 5 && view === 'reports') { T.step = 6; continue; }
+    break;
+  }
+}
+function tourDraw() {
+  const el = $('#tour');
+  document.querySelectorAll('.pulse').forEach((x) => x.classList.remove('pulse'));
+  document.querySelectorAll('.pulse-btn').forEach((x) => x.classList.remove('pulse-btn'));
+  document.body.classList.toggle('touring', !!T);
+  if (!T) { el.hidden = true; return; }
+  el.hidden = false;
+  const c = T.checkId ? checkOf(T.checkId) : null;
+  el.innerHTML = `<h2>Путь заказа${c ? ` · ${esc(titleOf(c))}` : ''}<button id="tourX" aria-label="Закрыть">✕</button></h2>
+    <ol>${TOUR.map((s, i) => `<li class="${i < T.step ? 'ok' : i === T.step ? 'now' : ''}"><span class="dot">${i < T.step ? '✓' : i + 1}</span>
+      <span>${i === T.step ? `<b>${s.t}</b>${s.d}` : s.t}</span></li>`).join('')}</ol>
+    ${T.step >= TOUR.length ? '<div class="fin">Готово: заказ прошёл весь путь — от кассы до отчёта. Так это работает каждый день, само.</div>' : ''}`;
+  $('#tourX').onclick = () => { T = null; tourDraw(); };
+  // Point at where to tap next.
+  const left = c ? [...new Set(S.units.filter((u) => u.checkId === c.id && isOpenU(u)).map(stOf))] : [];
+  const target = T.step === 0 ? 'pos' : T.step === 3 && !left.includes(view) ? left[0] : T.step === 1 ? (c && [...new Set(S.units.filter((u) => u.checkId === c.id).map(stOf))].find((x) => x !== view)) : T.step === 4 ? (c && !isHall(c) ? 'tv' : 'pass') : T.step === 5 ? 'reports' : null;
+  if (target && target !== view) document.querySelector(`.tab[data-view="${target}"]`)?.classList.add('pulse');
+  if (T.step === 0 && view === 'pos') $('#send')?.classList.add('pulse-btn');
+}
+$('#tourBtn').onclick = tourStart;
+
+// ---- boot ------------------------------------------------------------------------------------
+function syncSwitches() { $('#auto').setAttribute('aria-pressed', S.auto); $('#bots').setAttribute('aria-pressed', S.bots); }
+$('#auto').onclick = () => { S.auto = !S.auto; syncSwitches(); toast(S.auto ? 'Новые заказы будут приходить сами' : 'Автозаказы выключены'); save(); };
+$('#bots').onclick = () => { S.bots = !S.bots; syncSwitches(); toast(S.bots ? 'Персонал отмечает позиции сам' : 'Отмечаете вы'); save(); };
+$('#reset').onclick = () => { $('#demo').open = false; confirmBox('Сбросить демо и начать смену заново?', 'Сбросить', () => { seed(); syncSwitches(); render(); }); };
+document.querySelectorAll('.tab').forEach((a) => { a.onclick = (e) => { e.preventDefault(); history.replaceState(null, '', a.getAttribute('href')); setView(a.dataset.view); }; });
+window.addEventListener('hashchange', () => setView(location.hash.slice(1)));
+const firstVisit = !load();
+if (firstVisit) seed();
+syncSwitches();
+setView(location.hash.slice(1) || 'bar');
+if (firstVisit) tourStart();
+</script>
+
+</body>
+</html>
