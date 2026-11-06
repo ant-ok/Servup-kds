@@ -34,7 +34,7 @@ export class SyncEngine extends EventEmitter {
     this.stationFor = () => null;
     this.queue = new Set();
     this.working = false;
-    this.timers = [];
+    this.timers = {};
     this.health = { lastPollOkAt: null, lastFullOkAt: null, lastCatalogAt: null, lastError: null, lastErrorAt: null, lastWebhookAt: null };
   }
 
@@ -49,8 +49,8 @@ export class SyncEngine extends EventEmitter {
   }
 
   stop() {
-    this.timers.forEach(clearTimeout);
-    this.timers = [];
+    Object.values(this.timers).forEach(clearTimeout);
+    this.timers = {};
     this.stopped = true;
   }
 
@@ -69,9 +69,9 @@ export class SyncEngine extends EventEmitter {
         this.fail(name, err);
       }
       const delay = failures ? Math.min(ms * 2 ** failures, Math.max(ms, 60000)) : ms;
-      if (!this.stopped) this.timers.push(setTimeout(tick, delay));
+      if (!this.stopped) this.timers[name] = setTimeout(tick, delay); // one timer per loop, never a growing list
     };
-    this.timers.push(setTimeout(tick, name === 'catalog' ? ms : Math.floor(Math.random() * Math.min(ms, 3000))));
+    this.timers[name] = setTimeout(tick, name === 'catalog' ? ms : Math.floor(Math.random() * Math.min(ms, 3000)));
   }
 
   fail(where, err) {
@@ -187,15 +187,17 @@ export class SyncEngine extends EventEmitter {
     }
   }
 
-  // Business days cross midnight, so always look at yesterday and today.
+  // Business days cross midnight, so look at yesterday, today and tomorrow: the
+  // dates go out as calendar days, and the venue's day may differ from UTC's.
   window() {
-    const to = new Date();
-    return { from: new Date(to - 24 * 3600e3), to };
+    const now = Date.now();
+    return { from: new Date(now - 24 * 3600e3), to: new Date(now + 24 * 3600e3) };
   }
 
   async pollOpen() {
+    const fetchedAt = new Date();
     const list = await this.poster.getTransactions({ ...this.window(), status: 1 });
-    await this.applyList(list);
+    await this.applyList(list, fetchedAt);
     await this.recheckMissing(list);
     // Fast food: a check is paid and closed seconds after it's opened, so it may
     // never show up as open. Ask for the closed ones too, but only their ids,
@@ -205,7 +207,8 @@ export class SyncEngine extends EventEmitter {
       const ids = closed.map((t) => Number(t.transaction_id ?? t.id)).filter(Boolean);
       if (ids.length) {
         const known = new Set((await query(
-          'SELECT poster_transaction_id AS id FROM transactions WHERE account_id = $1 AND poster_transaction_id = ANY($2)',
+          // "known" = already put through the screens; a row from a history load has no hash yet
+          'SELECT poster_transaction_id AS id FROM transactions WHERE account_id = $1 AND poster_transaction_id = ANY($2) AND products_hash IS NOT NULL',
           [this.accountId, ids])).rows.map((r) => Number(r.id)));
         for (const id of ids) if (!known.has(id)) this.enqueue(id);
         await this.idle();
@@ -216,8 +219,9 @@ export class SyncEngine extends EventEmitter {
   }
 
   async pollFull() {
+    const fetchedAt = new Date();
     const list = await this.poster.getTransactions({ ...this.window(), status: 0 });
-    await this.applyList(list);
+    await this.applyList(list, fetchedAt);
     await this.recheckMissing(list);
     this.health.lastFullOkAt = new Date().toISOString();
   }
@@ -237,12 +241,12 @@ export class SyncEngine extends EventEmitter {
     while (this.working || this.queue.size) await new Promise((r) => setTimeout(r, 20));
   }
 
-  async applyList(list) {
+  async applyList(list, fetchedAt = null) {
     for (const raw of list) {
       const t = normalizeTransaction(raw);
       if (!t.id) continue;
       if (!Array.isArray(raw.products)) { this.enqueue(t.id); continue; }
-      await this.apply(t);
+      await this.apply(t, { fetchedAt });
     }
   }
 
@@ -259,8 +263,9 @@ export class SyncEngine extends EventEmitter {
         const [id] = this.queue;
         this.queue.delete(id);
         try {
+          const fetchedAt = new Date();
           const raw = await this.poster.getTransaction(id);
-          if (raw) await this.apply(normalizeTransaction(raw), { historyFallback: true });
+          if (raw) await this.apply(normalizeTransaction(raw), { historyFallback: true, fetchedAt });
         } catch (err) {
           this.fail(`transaction ${id}`, err);
           // The pollers will pick it up again; no tight retry loop here.
@@ -271,9 +276,9 @@ export class SyncEngine extends EventEmitter {
     }
   }
 
-  async apply(t, { createUnits = true, historyFallback = false } = {}) {
+  async apply(t, { createUnits = true, historyFallback = false, fetchedAt = null } = {}) {
     const settings = await getSettings(this.accountId);
-    const opts = { settings, createUnits, historyFallback };
+    const opts = { settings, createUnits, historyFallback, fetchedAt };
     const run = (extra) => tx((c) => reconcileTransaction(c, this.accountId, t,
       { ...opts, catalog: this.catalog, stationFor: this.stationFor, ...extra }));
     let res = await run();

@@ -3,6 +3,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { startServer } from './server-helper.js';
+import { normalizeTransaction } from '../src/poster/normalize.js';
 
 let s;
 before(async () => { s = await startServer(); });
@@ -387,6 +388,8 @@ test('delivery services: badge on the kitchen card and on the pickup TV; rules a
 
 test('the fast poll stays light: open checks, and in fast food closed check ids only', async () => {
   const v = await s.venue({ preset: 'restaurant' });
+  v.engine.stop(); // only the polls this test makes are counted, not the background loop
+  await v.engine.idle();
   const calls = [];
   const orig = v.fake.getTransactions.bind(v.fake);
   v.fake.getTransactions = (q) => { calls.push(`${q.status}${q.light ? ' light' : ''}`); return orig(q); };
@@ -396,6 +399,80 @@ test('the fast poll stays light: open checks, and in fast food closed check ids 
   await v.admin('/api/admin/settings', { method: 'PUT', body: { quick_service: true } });
   await v.engine.pollOpen();
   assert.deepEqual(calls, ['1', '1', '2 light']);
+});
+
+test('security: admin writes need JSON (no cross-site forms), logins are rate-limited', async () => {
+  const v = await s.venue();
+  const res = await fetch(`${s.base}/api/admin/pickup/renew`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'x=1' });
+  assert.equal(res.status, 415);
+  const plain = await fetch(`${s.base}/api/platform/login`, { method: 'POST', headers: { 'content-type': 'text/plain' }, body: '{"password":"platform"}' });
+  assert.equal(plain.status, 415);
+  const guess = s.client();
+  let last;
+  for (let i = 0; i < 11; i++) last = await guess('/api/admin/login', { method: 'POST', body: { account: String(v.acc.id), password: `wrong-${i}` } });
+  assert.equal(last.status, 429, 'the 11th wrong password in 15 minutes is refused');
+});
+
+test('CSV export neutralises spreadsheet formulas in names', async () => {
+  const { toCsv } = await import('../src/reports.js');
+  const csv = toCsv([{ name: '=HYPERLINK("http://x")', n: -5 }], [['name', 'Имя'], ['n', 'N']]);
+  assert.match(csv, /'=HYPERLINK/);
+  assert.match(csv, /;-5/);
+});
+
+// ---- sync edge cases found in review ----------------------------------------------------
+
+test('an older Poster snapshot applied after a newer one changes nothing (no double-made portions)', async () => {
+  const v = await s.venue();
+  v.engine.stop(); await v.engine.idle();
+  const id = v.fake.open();
+  v.fake.add(id, 11, 1);
+  const old = normalizeTransaction((await v.fake.getTransactions({ status: 1 })).find((t) => Number(t.transaction_id) === id));
+  const tOld = new Date(Date.now() - 2000);
+  v.fake.add(id, 10, 1);                                   // a mojito is added after the old list was fetched
+  const fresh = normalizeTransaction(await v.fake.getTransaction(id));
+  await v.engine.apply(fresh, { fetchedAt: new Date() });
+  await v.engine.apply(old, { fetchedAt: tOld });         // the slow full poll lands late
+  const { rows } = await s.db.query(`SELECT name, status FROM units WHERE account_id = $1 ORDER BY id`, [v.acc.id]);
+  assert.deepEqual(rows.map((r) => r.status), ['new', 'new'], 'nothing was cancelled by the stale snapshot');
+});
+
+test('a check open for many hours still gets its new items on the screen', async () => {
+  const v = await s.venue();
+  v.engine.stop(); await v.engine.idle();
+  const id = v.fake.open({ openedAt: Date.now() - 2 * 3600e3 });
+  v.fake.add(id, 10, 1);
+  await v.engine.pollOpen();
+  await s.db.query(`UPDATE transactions SET opened_at = now() - interval '13 hours' WHERE account_id = $1`, [v.acc.id]);
+  v.fake.transactions.get(String(id)).date_start = String(Date.now() - 13 * 3600e3);
+  v.fake.add(id, 11, 1);
+  await v.engine.pollOpen();
+  const { rows } = await s.db.query(`SELECT count(*)::int AS n FROM units WHERE account_id = $1 AND status <> 'cancelled'`, [v.acc.id]);
+  assert.equal(rows[0].n, 2);
+});
+
+test('a history load does not hide a fresh fast-food order from the kitchen', async () => {
+  const v = await s.venue({ preset: 'fastfood' });
+  v.engine.stop(); await v.engine.idle();
+  const id = v.fake.open({ table: '' });
+  v.fake.add(id, 20, 1);
+  v.fake.close(id);
+  await v.engine.backfill(new Date(), new Date());         // the admin loads history during service
+  await v.engine.pollOpen();
+  const { rows } = await s.db.query(`SELECT count(*)::int AS n FROM units WHERE account_id = $1`, [v.acc.id]);
+  assert.equal(rows[0].n, 1);
+});
+
+test('the sync loops keep one timer each, however long they run', async () => {
+  const { SyncEngine } = await import('../src/sync/engine.js');
+  const e = Object.create(SyncEngine.prototype);
+  Object.assign(e, { timers: {}, stopped: false, accountId: 0, health: {}, emit() {} });
+  let n = 0;
+  e.loop('t', 2, async () => { n++; });
+  await new Promise((r) => setTimeout(r, 120));
+  assert.ok(n > 10);
+  assert.equal(Object.keys(e.timers).length, 1);
+  e.stop();
 });
 
 // ---- platform, onboarding, health ------------------------------------------------------

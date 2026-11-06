@@ -8,7 +8,7 @@ import { pool, query, tx, audit, getSettings } from './db.js';
 import {
   requireAdmin, requireDevice, requirePlatform, signSession, setSessionCookie, platformLogin, verifyPassword,
   hashPassword, pinAttemptAllowed, pinFailed, pinLookup, newToken, hmac, oauthState, checkOauthState,
-  newPairCode, pairAttemptAllowed, pairFailed,
+  newPairCode, pairAttemptAllowed, pairFailed, loginAllowed, loginFailed,
 } from './auth.js';
 import { orderStatus } from './pos.js';
 import { applyAction, serveTicket, startSession, endSession, dismissTicket, getBoard, getPickupBoard, aggregatorRules, ActionError } from './units.js';
@@ -63,6 +63,12 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode, e
     next();
   };
   app.use(['/api/kds', '/api/pos', '/api/pair'], cors);
+  // Cookie-authenticated areas: a write must be a JSON request. Browsers let
+  // another site send forms and text/plain, never application/json, without CORS.
+  app.use(['/api/admin', '/api/platform'], (req, res, next) => {
+    if (['GET', 'HEAD', 'OPTIONS'].includes(req.method) || /^application\/json\b/i.test(req.get('content-type') ?? '')) return next();
+    res.status(415).json({ error: 'Ожидается JSON' });
+  });
 
   app.use(express.static(publicDir, { extensions: ['html'] }));
   // For an external uptime monitor: 200 while the DB answers, 503 otherwise.
@@ -86,8 +92,10 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode, e
          ORDER BY (poster_account = $1) DESC LIMIT 1`,
         [String(body.account ?? ''), String(body.account_number ?? '')])).rows[0]
       : null;
+    // An application webhook carries the venue's new token: keep it out of the log.
+    const logged = JSON.parse(JSON.stringify(body).replace(/("?access_token"?\s*[:=]\s*"?)[^",}&]+/g, '$1[скрыто]'));
     await query('INSERT INTO webhook_log (account_id, payload, verified, error) VALUES ($1, $2, $3, $4)',
-      [acc?.id ?? null, body, verified, acc ? null : 'unknown account']).catch(() => {});
+      [acc?.id ?? null, logged, verified, acc ? null : 'unknown account']).catch(() => {});
     // Answer immediately; the payload is only a hint, data is always re-fetched from the API.
     res.json({ ok: true });
     const what = classifyWebhook(body);
@@ -151,7 +159,10 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode, e
       console.error('[manage]', err.message);
       return res.status(502).send(`Poster не выдал доступ: ${err.message}`);
     }
-    const acc = await upsertPosterAccount({ posterAccount: req.query.account ? String(req.query.account) : null, data, preset: 'bar' });
+    // The account comes only from Poster's answer: `?account=` in the URL is
+    // whatever the caller typed and must never pick which venue to sign into.
+    if (data.account_number == null) return res.status(502).send('Poster не сообщил номер аккаунта. Попробуйте ещё раз.');
+    const acc = await upsertPosterAccount({ posterAccount: null, data, preset: 'bar' });
     await engines.restart(acc.id);
     setSessionCookie(res, 'admin', signSession('admin', acc.id));
     res.redirect('/admin/');
@@ -163,8 +174,11 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode, e
       'SELECT id FROM accounts WHERE ($1::text IS NOT NULL AND poster_account = $1) OR ($2::text IS NOT NULL AND poster_account_number = $2) LIMIT 1',
       [posterAccount, number])).rows[0];
     if (acc) {
+      if ((await query('SELECT active FROM accounts WHERE id = $1', [acc.id])).rows[0]?.active === false) {
+        throw Object.assign(new Error('Заведение отключено. Обратитесь к поставщику системы.'), { status: 403, expose: true });
+      }
       await query(
-        `UPDATE accounts SET poster_token = $2, active = true, poster_account = COALESCE(poster_account, $3),
+        `UPDATE accounts SET poster_token = $2, poster_account = COALESCE(poster_account, $3),
            poster_account_number = COALESCE(poster_account_number, $4), updated_at = now() WHERE id = $1`,
         [acc.id, data.access_token, posterAccount, number]);
     } else {
@@ -296,9 +310,12 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode, e
   // Sign in by Poster account name (or venue id) and password; or via Poster OAuth.
   app.post('/api/admin/login', async (req, res) => {
     const login = String(req.body?.account ?? '').trim().toLowerCase();
+    const keys = [`ip:${req.ip}`, `acc:${login}`];
+    if (!loginAllowed(...keys)) return res.status(429).json({ error: 'Слишком много попыток. Подождите 15 минут.' });
     const acc = (await query(
       `SELECT id, admin_password FROM accounts WHERE active AND (lower(poster_account) = $1 OR id::text = $1)`, [login])).rows[0];
     if (!acc || !(await verifyPassword(req.body?.password, acc.admin_password))) {
+      loginFailed(...keys);
       return res.status(401).json({ error: 'Неверное заведение или пароль' });
     }
     setSessionCookie(res, 'admin', signSession('admin', acc.id));
@@ -703,8 +720,10 @@ export function createApp({ engines, notify, exchangeCode = exchangeOAuthCode, e
 
   // ---- Platform owner: all venues of this installation ----------------------------
   app.post('/api/platform/login', (req, res) => {
+    const keys = [`ip:${req.ip}`, 'platform'];
+    if (!loginAllowed(...keys)) return res.status(429).json({ error: 'Слишком много попыток. Подождите 15 минут.' });
     const v = platformLogin(req.body?.password);
-    if (!v) return res.status(401).json({ error: 'Неверный пароль' });
+    if (!v) { loginFailed(...keys); return res.status(401).json({ error: 'Неверный пароль' }); }
     setSessionCookie(res, 'platform', v);
     res.json({ ok: true });
   });

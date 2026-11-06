@@ -131,7 +131,8 @@ test('taps made without network are queued, shown as pending and delivered later
   await page.waitForSelector('.unit.pending');
   await page.unroute('**/api/kds/action');
   await page.reload();
-  await page.click('#startBtn');
+  // No tap needed after a reload: the screen starts by itself and sends the queue.
+  await page.waitForSelector('#start.hidden', { state: 'attached', timeout: 5000 });
   await pollUntil(async () => (await s.db.query(`SELECT status FROM units WHERE account_id = $1`, [v.acc.id])).rows[0].status === 'ready',
     { timeout: 8000 });
   await page.close();

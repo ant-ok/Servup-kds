@@ -12,7 +12,8 @@ export function verifyWebhook(body) {
   }
   parts.push(body.time, config.poster.appSecret);
   const expected = crypto.createHash('md5').update(parts.join(';')).digest('hex');
-  return expected === String(body.verify).toLowerCase();
+  const got = String(body.verify).toLowerCase();
+  return got.length === expected.length && crypto.timingSafeEqual(Buffer.from(got), Buffer.from(expected));
 }
 
 // Only checks matter to the KDS. Anything else (menu, employees) only

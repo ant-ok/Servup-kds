@@ -5,7 +5,7 @@ import { EngineManager } from './sync/engine.js';
 import { createTelegram, startBotPolling, AlertMonitor } from './alerts.js';
 import { createRuntime } from './runtime.js';
 
-if (process.env.NODE_ENV === 'production' && (config.appSecret === 'change-me-please' || config.platformPassword === 'platform')) {
+if (process.env.NODE_ENV === 'production' && (config.appSecret === 'change-me-please' || config.appSecret.length < 24 || config.platformPassword === 'platform' || config.platformPassword.length < 8)) {
   console.error('[kds] Задайте APP_SECRET и PLATFORM_PASSWORD в .env перед запуском');
   process.exit(1);
 }

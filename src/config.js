@@ -10,7 +10,8 @@ if (fs.existsSync(envFile)) {
   }
 }
 
-const env = (name, def) => process.env[name] ?? def;
+// An empty value (`APP_SECRET=` straight from .env.example) counts as not set.
+const env = (name, def) => (process.env[name] === undefined || process.env[name] === '' ? def : process.env[name]);
 const num = (name, def) => Number(env(name, def));
 
 export const config = {

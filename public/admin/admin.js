@@ -37,7 +37,7 @@ $('loginForm').onsubmit = async (e) => {
   $('login').classList.add('hidden');
   boot();
 };
-$('logout').onclick = async () => { await fetch('/api/admin/logout', { method: 'POST' }); showLogin(); };
+$('logout').onclick = async () => { await fetch('/api/admin/logout', { method: 'POST', headers: { 'content-type': 'application/json' } }); showLogin(); };
 
 // ---- tabs --------------------------------------------------------------------
 let tab = 'reports';

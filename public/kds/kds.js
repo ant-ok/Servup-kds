@@ -39,6 +39,8 @@ async function api(path, body) {
     method: body ? 'POST' : 'GET',
     headers: { 'content-type': 'application/json', 'x-device-token': deviceToken ?? '' },
     body: body ? JSON.stringify(body) : undefined,
+    // One hung request must not freeze the queue of taps or the board.
+    signal: AbortSignal.timeout ? AbortSignal.timeout(15000) : undefined,
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw Object.assign(new Error(data.error || `HTTP ${res.status}`), { status: res.status, code: data.code });
@@ -574,6 +576,12 @@ async function start() {
   navigator.wakeLock?.request('screen').catch(() => {});
   $('start').classList.add('hidden');
   state.started = true;
+  store.set('kds_autostart', true);
+  // Browsers start sound only after a touch: after an automatic reload the first
+  // touch anywhere turns it back on; until then new orders flash instead of beeping.
+  const unlock = () => { audio?.resume?.().catch(() => {}); document.removeEventListener('pointerdown', unlock); };
+  document.addEventListener('pointerdown', unlock);
+  if (audio?.state === 'suspended') setTimeout(() => toast('Коснитесь экрана, чтобы включить звук', 'info'), 1500);
 
   try { Object.assign(state.settings, (await api('/me')).settings); } catch (err) { if (err.code === 'device') return showUnpaired(); }
   $('addStaff').textContent = `+ ${state.settings.makerTitle}`;
@@ -584,7 +592,11 @@ async function start() {
   socket.on('disconnect', () => { state.online = false; renderStatus(); });
   socket.on('board', loadBoard);
   socket.on('health', (h) => { state.health = h; renderStatus(); });
-  socket.on('connect_error', (e) => { if (e.message === 'device') showUnpaired(); });
+  socket.on('connect_error', (e) => {
+    if (e.message === 'device') return showUnpaired();
+    // A refused handshake is not retried by Socket.IO itself: try again shortly.
+    if (e.message === 'unavailable') setTimeout(() => socket.connect(), 5000);
+  });
 
   // Safety net in case a push is missed.
   setInterval(loadBoard, 15000);
@@ -617,5 +629,5 @@ $('addStaff').onclick = () => askPin();
 $('startBtn').onclick = start;
 $('pairForm').onsubmit = pairWithCode;
 if (!deviceToken) showUnpaired();
-else if (EMBED) start();
+else if (EMBED || store.get('kds_autostart', false)) start();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});

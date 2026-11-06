@@ -76,28 +76,32 @@ const CANCEL_PRIORITY = { new: 0, taken: 1, ready: 2 };
 
 export async function reconcileTransaction(client, accountId, t, opts) {
   const { catalog, stationFor, settings, now = new Date(), createUnits = true, includeUnknown = false, force = false,
-    historyFallback = false } = opts;
+    historyFallback = false, fetchedAt = null } = opts;
   await client.query('SELECT pg_advisory_xact_lock($1, $2)', [accountId, t.id % 2147483647]);
 
   const hash = hashProducts(t, settings.release_mode === 'on_send');
   const prev = (await client.query(
-    'SELECT id, status, products_hash, released_sent FROM transactions WHERE account_id = $1 AND poster_transaction_id = $2', [accountId, t.id],
+    'SELECT id, status, products_hash, released_sent, fetched_at FROM transactions WHERE account_id = $1 AND poster_transaction_id = $2', [accountId, t.id],
   )).rows[0];
+  // A snapshot fetched before the one already applied is out of date: skip it.
+  if (prev?.fetched_at && fetchedAt && fetchedAt < prev.fetched_at) return { changed: false, created: 0, cancelled: 0, unknown: [], stale: true };
 
   const txId = (await client.query(
     `INSERT INTO transactions (account_id, poster_transaction_id, status, table_name, hall_name, waiter_poster_id, waiter_name,
-       spot_id, tablet_id, guests, comment, opened_at, closed_at, sum_total, payed_sum, products_hash, raw, sent_count, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18, now())
+       spot_id, tablet_id, guests, comment, opened_at, closed_at, sum_total, payed_sum, products_hash, raw, sent_count, fetched_at, updated_at)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19, now())
      ON CONFLICT (account_id, poster_transaction_id) DO UPDATE SET
        status=EXCLUDED.status, table_name=EXCLUDED.table_name, hall_name=COALESCE(EXCLUDED.hall_name, transactions.hall_name),
        waiter_poster_id=EXCLUDED.waiter_poster_id, waiter_name=EXCLUDED.waiter_name, spot_id=EXCLUDED.spot_id,
        tablet_id=COALESCE(EXCLUDED.tablet_id, transactions.tablet_id), sent_count=COALESCE(EXCLUDED.sent_count, transactions.sent_count), guests=EXCLUDED.guests, comment=EXCLUDED.comment,
        opened_at=COALESCE(EXCLUDED.opened_at, transactions.opened_at), closed_at=EXCLUDED.closed_at,
        sum_total=EXCLUDED.sum_total, payed_sum=EXCLUDED.payed_sum, products_hash=EXCLUDED.products_hash,
-       raw=EXCLUDED.raw, updated_at=now()
+       raw=EXCLUDED.raw, fetched_at=COALESCE(EXCLUDED.fetched_at, transactions.fetched_at), updated_at=now()
      RETURNING id`,
+    // Without units (history load, nightly re-read) the hash is not kept, so the
+    // next live sync still looks at the check and can put it on the screens.
     [accountId, t.id, t.status, t.tableName, t.hallName, t.waiterId, t.waiterName, t.spotId, t.tabletId, t.guests,
-     t.comment, t.openedAt, t.closedAt, t.sum, t.payedSum, hash, t.raw, t.sentCount],
+     t.comment, t.openedAt, t.closedAt, t.sum, t.payedSum, createUnits ? hash : null, t.raw, t.sentCount, fetchedAt],
   )).rows[0].id;
 
   if (t.waiterId) {
@@ -123,7 +127,9 @@ export async function reconcileTransaction(client, accountId, t, opts) {
 
   // Too-old checks (first launch, backfill) only update reports, never the screen.
   const startedAt = settings.kds_started_at ? new Date(settings.kds_started_at) : null;
-  const tooOld = (t.openedAt && t.openedAt < new Date(now - config.sync.maxAgeHours * 3600e3))
+  // The age limit keeps old checks off a screen that never showed them; a check
+  // already on the screens keeps getting its new items however long it is open.
+  const tooOld = (t.openedAt && t.openedAt < new Date(now - config.sync.maxAgeHours * 3600e3) && existing.length === 0)
     || (t.status === 2 && !prev && startedAt && t.closedAt && t.closedAt < startedAt);
   // Release mode "on_send": portions reach the screens only after the waiter
   // presses "send to workshop" in Poster, or once the check is paid (quick

@@ -92,6 +92,17 @@ export function pinAttemptAllowed(deviceId) {
 }
 export const pinFailed = (deviceId) => failures.set(deviceId, [...(failures.get(deviceId) ?? []), Date.now()]);
 
+// --- password guessing on admin and platform sign-in, per 15 minutes: 10 misses per
+// venue (or the platform), 100 per IP address (a whole venue can sit behind one router).
+const loginFailures = new Map();
+const recent = (key) => (loginFailures.get(key) ?? []).filter((t) => Date.now() - t < 15 * 60e3);
+const limitOf = (key) => (key.startsWith('ip:') ? 100 : 10);
+export const loginAllowed = (...keys) => keys.every((k) => recent(k).length < limitOf(k));
+export function loginFailed(...keys) {
+  for (const k of keys) loginFailures.set(k, [...recent(k), Date.now()]);
+  if (loginFailures.size > 50000) loginFailures.clear(); // never grows without bound
+}
+
 // --- OAuth state: signed and short-lived, protects the Poster callback -------
 // Carries a small payload (the chosen preset) through Poster's redirect.
 export const oauthState = (payload = '') => {

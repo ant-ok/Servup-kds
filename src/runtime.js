@@ -29,7 +29,12 @@ export function createRuntime({ engines, telegram = null, appOptions = {} }) {
 
   io = new Server(server, { pingInterval: 10000, pingTimeout: 8000 });
   io.use(async (socket, next) => {
-    const device = await deviceByToken(socket.handshake.auth?.deviceToken).catch(() => null);
+    let device;
+    try {
+      device = await deviceByToken(socket.handshake.auth?.deviceToken);
+    } catch {
+      return next(new Error('unavailable')); // database hiccup: the screen retries, it is still paired
+    }
     if (!device) return next(new Error('device'));
     socket.data.device = device;
     next();

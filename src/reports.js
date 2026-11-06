@@ -177,7 +177,8 @@ export function toCsv(rows, columns, timeZone = config.timezone) {
   const esc = (v) => {
     if (v === null || v === undefined) return '';
     if (v instanceof Date) v = v.toLocaleString('ru-RU', { timeZone });
-    const s = typeof v === 'number' ? String(v).replace('.', ',') : String(v);
+    let s = typeof v === 'number' ? String(v).replace('.', ',') : String(v);
+    if (typeof v !== 'number' && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
     return /[;"\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   const head = columns.map(([, title]) => esc(title)).join(';');
